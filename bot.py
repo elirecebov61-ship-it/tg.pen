@@ -1,5 +1,3 @@
-pkill -f bot.py
-cat > bot.py << 'ENDOFFILE'
 import logging
 import random
 import json
@@ -1007,5 +1005,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-ENDOFFILE
-python bot.py
