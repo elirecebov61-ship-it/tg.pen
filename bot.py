@@ -15,6 +15,7 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = 8034872992
 TZ = ZoneInfo("Europe/Istanbul")
 DB_FILE = "data.json"
