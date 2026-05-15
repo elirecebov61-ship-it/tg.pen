@@ -3,6 +3,7 @@ import random
 import os
 import string
 import asyncio
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import psycopg2
@@ -26,14 +27,21 @@ _bet_lock = asyncio.Lock()
 _vs_lock  = asyncio.Lock()
 
 def get_conn():
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.autocommit = False
-    return conn
+    for attempt in range(10):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.autocommit = False
+            return conn
+        except Exception as e:
+            print(f"DB bağlantı xətası (cəhd {attempt+1}/10): {e}")
+            time.sleep(3)
+    raise Exception("DB-yə qoşulmaq mümkün olmadı!")
 
 def init_db():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 chat_id               TEXT NOT NULL,
                 user_id               TEXT NOT NULL,
@@ -75,8 +83,11 @@ def init_db():
                 user_id TEXT NOT NULL,
                 PRIMARY KEY (kod, user_id)
             );
-            """)
+        """)
         conn.commit()
+        cur.close()
+    finally:
+        conn.close()
 
 def get_user_row(cur, chat_id, user_id):
     cid, uid = str(chat_id), str(user_id)
@@ -170,9 +181,12 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @ensure_group
 async def cmd_boyum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, update.effective_chat.id, update.effective_user.id)
+        finally:
+            conn.close()
     if not is_registered(u):
         await update.message.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
         return
@@ -186,9 +200,12 @@ async def cmd_boyu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     target = msg.reply_to_message.from_user
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, update.effective_chat.id, target.id)
+        finally:
+            conn.close()
     if not is_registered(u):
         await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
         return
@@ -199,7 +216,8 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now  = now_tr()
     name = get_name(update.effective_user)
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, update.effective_chat.id, update.effective_user.id)
                 if u["uzat_reset"]:
@@ -228,6 +246,8 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 boy = u["boy"]
                 save_user(cur, u)
             conn.commit()
+        finally:
+            conn.close()
     await update.message.reply_text(
         f"🔥 HELAL OLSUN {name}!\n"
         f"🍆 Tam {ekle} cm uzattın!\n"
@@ -239,13 +259,16 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_siralama(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = str(update.effective_chat.id)
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     "SELECT name, boy FROM users WHERE chat_id=%s AND registered=1 ORDER BY boy DESC LIMIT 25",
                     (cid,)
                 )
                 rows = cur.fetchall()
+        finally:
+            conn.close()
     medals = ["🥇", "🥈", "🥉"]
     lines  = ["🏆 Grup Penis Boyu Sıralaması:\n"]
     for i, row in enumerate(rows):
@@ -263,26 +286,29 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Kullanım: /yt <miktar> veya /yt all")
         return
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, cid, uid)
-        if not is_registered(u):
-            await update.message.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
+        finally:
+            conn.close()
+    if not is_registered(u):
+        await update.message.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
+        return
+    arg   = ctx.args[0].lower()
+    bahis = u["boy"] if arg == "all" else None
+    if bahis is None:
+        try:
+            bahis = int(arg)
+        except ValueError:
+            await update.message.reply_text("❗ Kullanım: /yt <miktar> veya /yt all")
             return
-        arg   = ctx.args[0].lower()
-        bahis = u["boy"] if arg == "all" else None
-        if bahis is None:
-            try:
-                bahis = int(arg)
-            except ValueError:
-                await update.message.reply_text("❗ Kullanım: /yt <miktar> veya /yt all")
-                return
-        if bahis <= 0:
-            await update.message.reply_text("❗ Bahis 0'dan büyük olmalı!")
-            return
-        if bahis > u["boy"]:
-            await update.message.reply_text(f"❗ Yeterli boyun yok! Mevcut: {u['boy']} cm")
-            return
+    if bahis <= 0:
+        await update.message.reply_text("❗ Bahis 0'dan büyük olmalı!")
+        return
+    if bahis > u["boy"]:
+        await update.message.reply_text(f"❗ Yeterli boyun yok! Mevcut: {u['boy']} cm")
+        return
     keyboard = [[
         InlineKeyboardButton("🟡 YAZI", callback_data=f"yt|yazi|{uid}|{bahis}"),
         InlineKeyboardButton("🦅 TURA", callback_data=f"yt|tura|{uid}|{bahis}")
@@ -346,7 +372,8 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"🪙 Para havada...\nSeçimin: {secim}")
     await asyncio.sleep(random.randint(2, 3))
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, cid, caller_uid)
                 condom_active = bool(
@@ -354,7 +381,7 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     now_tr() < datetime.fromisoformat(u["condom_active_until"])
                 )
                 if bahis > u["boy"]:
-                    await query.edit_message_text(f"❗ Oyun sırasında boyun değişti, bahis iptal!")
+                    await query.edit_message_text("❗ Oyun sırasında boyun değişti, bahis iptal!")
                     return
                 kazandi = random.random() < (0.65 if condom_active else 0.50)
                 if kazandi:
@@ -377,6 +404,8 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )
                 save_user(cur, u)
             conn.commit()
+        finally:
+            conn.close()
     await query.edit_message_text(msg)
 
 @ensure_group
@@ -399,33 +428,36 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     tid = str(target_user.id)
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, cid, uid)
                 t = get_user_row(cur, cid, tid)
-        arg   = ctx.args[0].lower()
-        bahis = u["boy"] if arg == "all" else None
-        if bahis is None:
-            try:
-                bahis = int(arg)
-            except ValueError:
-                await msg.reply_text("❗ Geçerli bir miktar gir.")
-                return
-        if bahis <= 0:
-            await msg.reply_text("❗ Bahis 0'dan büyük olmalı!")
+        finally:
+            conn.close()
+    arg   = ctx.args[0].lower()
+    bahis = u["boy"] if arg == "all" else None
+    if bahis is None:
+        try:
+            bahis = int(arg)
+        except ValueError:
+            await msg.reply_text("❗ Geçerli bir miktar gir.")
             return
-        if not is_registered(u):
-            await msg.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
-            return
-        if not is_registered(t):
-            await msg.reply_text("❗ Rakip kayıtlı değil.")
-            return
-        if bahis > u["boy"]:
-            await msg.reply_text(f"❗ Yeterli boyun yok! Mevcut: {u['boy']} cm")
-            return
-        if bahis > t["boy"]:
-            await msg.reply_text(f"❗ Rakibin yeterli boyu yok! Mevcut: {t['boy']} cm")
-            return
+    if bahis <= 0:
+        await msg.reply_text("❗ Bahis 0'dan büyük olmalı!")
+        return
+    if not is_registered(u):
+        await msg.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
+        return
+    if not is_registered(t):
+        await msg.reply_text("❗ Rakip kayıtlı değil.")
+        return
+    if bahis > u["boy"]:
+        await msg.reply_text(f"❗ Yeterli boyun yok! Mevcut: {u['boy']} cm")
+        return
+    if bahis > t["boy"]:
+        await msg.reply_text(f"❗ Rakibin yeterli boyu yok! Mevcut: {t['boy']} cm")
+        return
     challenger_name = get_name(update.effective_user)
     target_name     = get_name(target_user)
     keyboard = [[
@@ -500,7 +532,8 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⚔️ Düello başladı, sonuç hesaplanıyor...")
     await asyncio.sleep(random.randint(2, 3))
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, cid, challenger_uid)
                 t = get_user_row(cur, cid, target_uid)
@@ -522,6 +555,8 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 save_user(cur, u)
                 save_user(cur, t)
             conn.commit()
+        finally:
+            conn.close()
     await query.message.reply_text(
         f"💦 VS SONUCU!\n\n"
         f"👑 Kazanan: {winner_name} (+{bahis} cm)\n"
@@ -534,7 +569,8 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = now_tr()
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u              = get_user_row(cur, update.effective_chat.id, update.effective_user.id)
                 active_until   = datetime.fromisoformat(u["condom_active_until"])   if u.get("condom_active_until")   else None
@@ -567,6 +603,8 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 au_str                       = new_active.strftime("%H:%M:%S")
                 save_user(cur, u)
             conn.commit()
+        finally:
+            conn.close()
     await update.message.reply_text(
         f"🛡️ CONDOM TAKILDI!\n\n"
         f"🎲 15 dakika boyunca şansın arttı.\n"
@@ -590,7 +628,8 @@ async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid   = str(target_user.id)
     today = today_str()
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, cid, uid)
                 t = get_user_row(cur, cid, tid)
@@ -654,6 +693,8 @@ async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         f"🔁 Kalan deneme: {kalan}"
                     )
             conn.commit()
+        finally:
+            conn.close()
     await msg.reply_text(reply)
 
 @ensure_group
@@ -682,7 +723,8 @@ async def cmd_yolla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid   = str(target_user.id)
     today = today_str()
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u = get_user_row(cur, cid, uid)
                 t = get_user_row(cur, cid, tid)
@@ -729,6 +771,8 @@ async def cmd_yolla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 save_user(cur, u)
                 save_user(cur, t)
             conn.commit()
+        finally:
+            conn.close()
     await msg.reply_text(
         f"🎁 TRANSFERİ BAŞARILI!\n\n"
         f"📤 Gönderen: {my_name}\n"
@@ -788,7 +832,8 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     kod = ctx.args[0].upper()
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT * FROM promos WHERE kod=%s", (kod,))
                 promo = cur.fetchone()
@@ -815,6 +860,8 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 save_user(cur, u)
                 cur.execute("INSERT INTO promo_used (kod, user_id) VALUES (%s,%s)", (kod, uid))
             conn.commit()
+        finally:
+            conn.close()
     await update.message.reply_text(
         f"🎉 PROMO AKTİF!\n\n"
         f"📏 Eklenen: +{miktar} cm\n"
@@ -838,13 +885,16 @@ async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     expires = (now_tr() + timedelta(days=gun)).isoformat()
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO promos (kod, miktar, expires) VALUES (%s,%s,%s) ON CONFLICT(kod) DO UPDATE SET miktar=EXCLUDED.miktar, expires=EXCLUDED.expires",
                     (kod, miktar, expires)
                 )
             conn.commit()
+        finally:
+            conn.close()
     await update.message.reply_text(
         f"✅ PROMOKOD OLUŞTURULDU!\n\n"
         f"🎟️ KOD: {kod}\n"
@@ -868,13 +918,16 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kod     = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
     expires = (now_tr() + timedelta(days=gun)).isoformat()
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO promos (kod, miktar, expires) VALUES (%s,%s,%s) ON CONFLICT(kod) DO UPDATE SET miktar=EXCLUDED.miktar, expires=EXCLUDED.expires",
                     (kod, miktar, expires)
                 )
             conn.commit()
+        finally:
+            conn.close()
     await update.message.reply_text(
         f"✅ RASTGELE PROMOKOD OLUŞTURULDU!\n\n"
         f"🎟️ KOD: {kod}\n"
@@ -887,12 +940,15 @@ async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
         return
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT COUNT(DISTINCT chat_id) as grups, COUNT(*) as users, SUM(boy) as total_boy FROM users WHERE registered=1")
                 row = cur.fetchone()
                 cur.execute("SELECT COUNT(*) as c FROM promos")
                 promo_count = cur.fetchone()["c"]
+        finally:
+            conn.close()
     total   = row["total_boy"] or 0
     users   = row["users"]     or 0
     grups   = row["grups"]     or 0
@@ -911,10 +967,13 @@ async def cmd_disistatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
         return
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT chat_id, name, boy FROM users WHERE registered=1 ORDER BY chat_id, boy DESC")
                 rows = cur.fetchall()
+        finally:
+            conn.close()
     groups = {}
     for row in rows:
         groups.setdefault(row["chat_id"], []).append(row)
@@ -949,7 +1008,8 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid         = str(target_user.id)
     name        = get_name(target_user)
     async with _db_lock:
-        with get_conn() as conn:
+        conn = get_conn()
+        try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 u               = get_user_row(cur, cid, tid)
                 u["boy"]        = miktar
@@ -957,6 +1017,8 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 u["name"]       = name
                 save_user(cur, u)
             conn.commit()
+        finally:
+            conn.close()
     await msg.reply_text(f"✅ {name} artık {miktar} cm!")
 
 async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -969,13 +1031,16 @@ async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if now_ts - ctx.bot_data.get("last_name_save", 0) > 60:
         ctx.bot_data["last_name_save"] = now_ts
         async with _db_lock:
-            with get_conn() as conn:
+            conn = get_conn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO users (chat_id, user_id, name) VALUES (%s,%s,%s)
                         ON CONFLICT(chat_id,user_id) DO UPDATE SET name=EXCLUDED.name
                     """, (cid, uid, name))
                 conn.commit()
+            finally:
+                conn.close()
 
 async def post_init(app: Application):
     init_db()
