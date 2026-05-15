@@ -169,28 +169,28 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "           🔥 KOMUT REHBERİ 🔥\n"
         "╚══════════════════════════════════╝\n\n"
         "🏛️ GENEL KOMUTLAR\n"
-        "📏 `/boyum` — Kendi penis boyunu gösterir\\.\n"
-        "👀 `/boyu` — Yanıtladığın kişinin boyunu gösterir\\.\n"
-        "⏳ `/uzat` — 12 saatlik periyotta 2 hakla boyunu uzatır\\.\n"
-        "🏆 `/siralama` — Grubun en büyük 25 listesini gösterir\\.\n\n"
+        "📏 `/boyum` — Kendi penis boyunu gösterir.\n"
+        "👀 `/boyu` — Yanıtladığın kişinin boyunu gösterir.\n"
+        "⏳ `/uzat` — 12 saatlik periyotta 2 hakla boyunu uzatır.\n"
+        "🏆 `/siralama` — Grubun en büyük 25 listesini gösterir.\n\n"
         "🎰 KUMARHANE\n"
-        "🪙 `/yt <miktar>` — Yazı tura\\. Ya katla ya bat\\!\n"
-        "⚔️ `/vs <miktar>` — Yanıtladığın kişiye düello at\\.\n"
-        "💸 `/yt all` — Tüm boyunla girer\\.\n\n"
+        "🪙 `/yt <miktar>` — Yazı tura. Ya katla ya bat!\n"
+        "⚔️ `/vs <miktar>` — Yanıtladığın kişiye düello at.\n"
+        "💸 `/yt all` — Tüm boyunla girer.\n\n"
         "🛡️ ÖZEL GÜÇLER\n"
-        "🛡️ `/condom` — 15 dakika şans buffı\\. 2 saatte 1 kullanılır\\.\n"
-        "🕵️ `/thief` — Yanıtladığın kişiden boy çalmaya çalışır\\.\n"
-        "💌 `/yolla <miktar>` — Yanıtladığın kişiye boy gönderir\\.\n\n"
+        "🛡️ `/condom` — 15 dakika şans buffı. 2 saatte 1 kullanılır.\n"
+        "🕵️ `/thief` veya `/hirsiz` — Yanıtladığın kişiden boy çalmaya çalışır.\n"
+        "💌 `/yolla <miktar>` — Yanıtladığın kişiye boy gönderir.\n\n"
         "🚀 ETKİLEŞİM\n"
-        "🔥 `/kaldir` — Yanıtladığın kişiyi gaza getirir\\.\n"
-        "📉 `/indir` — Yanıtladığın kişiyi gömer\\.\n\n"
+        "🔥 `/kaldir` — Yanıtladığın kişiyi gaza getirir.\n"
+        "📉 `/indir` — Yanıtladığın kişiyi gömer.\n\n"
         "🎁 PROMOSYON\n"
-        "📦 `/promo <kod>` — Promosyon kodunu kullanır\\.\n\n"
+        "📦 `/promo <kod>` — Promosyon kodunu kullanır.\n\n"
         "🌟 EMEĞİ GEÇENLER 🌟\n"
         "⚡ @emektas\n"
         "V2"
     )
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 @ensure_group
 async def cmd_boyum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -256,8 +256,8 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     h, rem     = divmod(total_sec, 3600)
                     m, _       = divmod(rem, 60)
                     await update.message.reply_text(
-                        f"⏳ Bu periyot için hakkını doldurdun\\.\nKalan: *{h} saat {m} dakika*",
-                        parse_mode="MarkdownV2"
+                        f"⏳ Bu periyot için *2* hakkını doldurdun.\nKalan: *{h} saat {m} dk*",
+                        parse_mode="Markdown"
                     )
                     return
                 ekle            = random.randint(2, 10)
@@ -270,18 +270,18 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if u["uzat_hak"] == 1:
                     suffix = "*Hala 1 hakkın daha var!*"
                 else:
-                    suffix = "*Bu periyotluk bitti\\.*"
+                    suffix = "*Bu periyotluk bitti.*"
                 boy = u["boy"]
                 save_user(cur, u)
             conn.commit()
         finally:
             conn.close()
     await update.message.reply_text(
-        f"🔥 *HELAL OLSUN {name}\\!*\n"
-        f"🍆 Tam *{ekle} cm* uzattın\\!\n"
+        f"🔥 *HELAL OLSUN {name}!*\n"
+        f"🍆 Tam *{ekle} cm* uzattın!\n"
         f"📏 Yeni boyun: *{boy} cm*\n"
         f"{suffix}",
-        parse_mode="MarkdownV2"
+        parse_mode="Markdown"
     )
 
 @ensure_group
@@ -299,7 +299,7 @@ async def cmd_siralama(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         finally:
             conn.close()
     medals = ["🥇", "🥈", "🥉"]
-    lines  = ["🏆 *Grup Penis Boyu Sıralaması:*\n"]
+    lines  = ["🏆 *Grup Penis Boyu Sıralaması:* 📊\n"]
     for i, row in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
         lines.append(f"{medal} {row['name'] or 'Bilinmeyen'} — {row['boy']} cm")
@@ -341,8 +341,8 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
     if bahis <= 0 or bahis > u["boy"]:
         await update.message.reply_text(
-            f"❗ Yetersiz/geçersiz bahis\\. Boyun: *{u['boy']} cm*",
-            parse_mode="MarkdownV2"
+            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*",
+            parse_mode="Markdown"
         )
         return
     keyboard = [[
@@ -351,7 +351,7 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]]
     sent = await update.message.reply_text(
         f"🪙 *YAZI TURA BAŞLADI!*\n"
-        f"👤 Oyuncu: {name}\n"
+        f"👤 *{name}*\n"
         f"🍆 Bahis: *{bahis} cm*\n"
         f"⏳ 20 saniye içinde seç!",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -511,14 +511,14 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if bahis <= 0 or bahis > u["boy"]:
         await msg.reply_text(
-            f"❗ Yetersiz/geçersiz bahis\\. Boyun: *{u['boy']} cm*",
-            parse_mode="MarkdownV2"
+            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*",
+            parse_mode="Markdown"
         )
         return
     if bahis > t["boy"]:
         await msg.reply_text(
-            f"❗ Rakibin yeterli boyu yok\\! Mevcut: *{t['boy']} cm*",
-            parse_mode="MarkdownV2"
+            f"❗ Rakibin yeterli boyu yok! Mevcut: *{t['boy']} cm*",
+            parse_mode="Markdown"
         )
         return
     challenger_name = get_name(update.effective_user)
@@ -597,25 +597,23 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if action == "kac":
         try:
-            await ctx.bot.delete_message(chat_id=int(cid), message_id=mid)
+            await query.edit_message_text(
+                f"❌ *{target_name}* kaçtı. VS iptal!",
+                parse_mode="Markdown"
+            )
         except Exception:
             pass
-        await ctx.bot.send_message(
-            chat_id=int(cid),
-            text=f"❌ *{target_name}* kaçtı. VS iptal!",
-            parse_mode="Markdown"
-        )
         return
 
+    # Kabul - mesajı edit et, sonra sil, yeni mesaj gönder
     try:
-        await ctx.bot.delete_message(chat_id=int(cid), message_id=mid)
+        await query.edit_message_text(
+            "✅ *VS kabul edildi!* Sonuç hesaplanıyor...",
+            parse_mode="Markdown"
+        )
     except Exception:
         pass
-    kabul_msg = await ctx.bot.send_message(
-        chat_id=int(cid),
-        text=f"✅ *VS kabul edildi!* Sonuç hesaplanıyor...",
-        parse_mode="Markdown"
-    )
+
     await asyncio.sleep(random.randint(2, 3))
 
     async with _db_lock:
@@ -653,7 +651,7 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         condom_line = f"\n🛡️ Condom etkisi: meydan okuyan şansı *%{u_pct}* — rakip şansı *%{t_pct}*"
 
     try:
-        await ctx.bot.delete_message(chat_id=int(cid), message_id=kabul_msg.message_id)
+        await ctx.bot.delete_message(chat_id=int(cid), message_id=mid)
     except Exception:
         pass
 
@@ -689,11 +687,11 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         if dt is None or now >= dt:
                             return "Bitti"
                         secs = int((dt - now).total_seconds())
-                        y, rem  = divmod(secs, 365*24*3600)
-                        mo, rem = divmod(rem, 30*24*3600)
-                        d, rem  = divmod(rem, 24*3600)
-                        h, rem  = divmod(rem, 3600)
-                        m, s    = divmod(rem, 60)
+                        y,  rem = divmod(secs, 365*24*3600)
+                        mo, rem = divmod(rem,  30*24*3600)
+                        d,  rem = divmod(rem,  24*3600)
+                        h,  rem = divmod(rem,  3600)
+                        m,  s   = divmod(rem,  60)
                         parts = []
                         if y:  parts.append(f"{y} yıl")
                         if mo: parts.append(f"{mo} ay")
@@ -765,7 +763,7 @@ async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 count  = td_row["count"] if td_row else 0
                 if count >= 3:
                     await msg.reply_text(
-                        f"🚫 Bugün bu kişiden zaten *3* kez çalmaya çalıştın.\n"
+                        f"🚫 Bugün bu kişiden zaten *3* *kez* çalmaya çalıştın.\n"
                         f"🕛 UTC+3 saatine göre 00:00'dan sonra tekrar deneyebilirsin.",
                         parse_mode="Markdown"
                     )
@@ -1192,7 +1190,6 @@ async def post_init(app: Application):
         BotCommand("vs",       "Düello at"),
         BotCommand("condom",   "15 dk şans buffı"),
         BotCommand("thief",    "Boy çalmaya çalış"),
-        BotCommand("hirsiz",   "Boy çalmaya çalış"),
         BotCommand("yolla",    "Birine boy gönder"),
         BotCommand("kaldir",   "Birini gaza getir"),
         BotCommand("indir",    "Birini göm"),
