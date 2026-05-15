@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["pip install psycopg2-binary python-telegram-bot[job-queue]"]
+
+[start]
+cmd = "python bot.py"
