@@ -1,9 +1,9 @@
 import logging
 import random
-import json
 import os
 import string
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -15,33 +15,99 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ["BOT_TOKEN"]
+TOKEN    = os.environ["BOT_TOKEN"]
 ADMIN_ID = 8034872992
-TZ = ZoneInfo("Europe/Istanbul")
-DB_FILE = "data.json"
+TZ       = ZoneInfo("Europe/Istanbul")
+DB_FILE  = os.environ.get("DB_PATH", "data.db")
 
-_db: dict = {}
 _db_lock  = asyncio.Lock()
 _bet_lock = asyncio.Lock()
 _vs_lock  = asyncio.Lock()
 
-def _load_from_disk() -> dict:
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+# ─── SQLite helpers ───────────────────────────────────────────────────────────
 
-def _write_file(data: str):
-    with open(DB_FILE, "w") as f:
-        f.write(data)
+def get_conn():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-async def _save_to_disk():
-    data = json.dumps(_db, indent=2, default=str)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _write_file, data)
+def init_db():
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            chat_id             TEXT NOT NULL,
+            user_id             TEXT NOT NULL,
+            name                TEXT DEFAULT '',
+            boy                 INTEGER DEFAULT 0,
+            registered          INTEGER DEFAULT 0,
+            uzat_hak            INTEGER DEFAULT 2,
+            uzat_reset          TEXT DEFAULT NULL,
+            condom_active_until TEXT DEFAULT NULL,
+            condom_cooldown_until TEXT DEFAULT NULL,
+            thief_date          TEXT DEFAULT NULL,
+            yolla_total_date    TEXT DEFAULT NULL,
+            yolla_total         INTEGER DEFAULT 0,
+            PRIMARY KEY (chat_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS thief_daily (
+            chat_id    TEXT NOT NULL,
+            user_id    TEXT NOT NULL,
+            target_id  TEXT NOT NULL,
+            count      INTEGER DEFAULT 0,
+            date       TEXT NOT NULL,
+            PRIMARY KEY (chat_id, user_id, target_id)
+        );
+        CREATE TABLE IF NOT EXISTS yolla_daily (
+            chat_id    TEXT NOT NULL,
+            user_id    TEXT NOT NULL,
+            target_id  TEXT NOT NULL,
+            count      INTEGER DEFAULT 0,
+            date       TEXT NOT NULL,
+            PRIMARY KEY (chat_id, user_id, target_id)
+        );
+        CREATE TABLE IF NOT EXISTS promos (
+            kod       TEXT PRIMARY KEY,
+            miktar    INTEGER NOT NULL,
+            expires   TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS promo_used (
+            kod     TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            PRIMARY KEY (kod, user_id)
+        );
+        """)
+
+def row_to_dict(row):
+    return dict(row) if row else None
+
+def get_user_row(conn, chat_id, user_id):
+    cid, uid = str(chat_id), str(user_id)
+    row = conn.execute(
+        "SELECT * FROM users WHERE chat_id=? AND user_id=?", (cid, uid)
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO users (chat_id, user_id) VALUES (?,?)", (cid, uid)
+        )
+        row = conn.execute(
+            "SELECT * FROM users WHERE chat_id=? AND user_id=?", (cid, uid)
+        ).fetchone()
+    return dict(row)
+
+def save_user(conn, u: dict):
+    conn.execute("""
+        UPDATE users SET
+            name=:name, boy=:boy, registered=:registered,
+            uzat_hak=:uzat_hak, uzat_reset=:uzat_reset,
+            condom_active_until=:condom_active_until,
+            condom_cooldown_until=:condom_cooldown_until,
+            thief_date=:thief_date,
+            yolla_total_date=:yolla_total_date,
+            yolla_total=:yolla_total
+        WHERE chat_id=:chat_id AND user_id=:user_id
+    """, u)
+
+# ─── Time helpers ─────────────────────────────────────────────────────────────
 
 def now_tr() -> datetime:
     return datetime.now(TZ)
@@ -49,33 +115,16 @@ def now_tr() -> datetime:
 def today_str() -> str:
     return now_tr().strftime("%Y-%m-%d")
 
-def get_user(chat_id, user_id) -> dict:
-    cid, uid = str(chat_id), str(user_id)
-    _db.setdefault(cid, {})
-    if uid not in _db[cid]:
-        _db[cid][uid] = {
-            "boy": 0,
-            "registered": False,
-            "uzat_hak": 2,
-            "uzat_reset": None,
-            "condom_active_until": None,
-            "condom_cooldown_until": None,
-            "thief_daily": {},
-            "thief_date": None,
-            "yolla_total_date": None,
-            "yolla_total": 0,
-            "yolla_daily": {},
-        }
-    return _db[cid][uid]
-
 def get_name(user) -> str:
     name = user.first_name or ""
     if user.last_name:
         name += " " + user.last_name
     return name.strip() or user.username or str(user.id)
 
-def is_registered(u) -> bool:
-    return u.get("registered", False)
+def is_registered(u: dict) -> bool:
+    return bool(u.get("registered"))
+
+# ─── Decorator ────────────────────────────────────────────────────────────────
 
 def ensure_group(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -84,6 +133,8 @@ def ensure_group(func):
             return
         return await func(update, ctx)
     return wrapper
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -122,12 +173,12 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @ensure_group
 async def cmd_boyum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     async with _db_lock:
-        u = get_user(update.effective_chat.id, update.effective_user.id)
-        if not is_registered(u):
-            await update.message.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
-            return
-        boy = u["boy"]
-    await update.message.reply_text(f"🍆 Şu anki boyun: {boy} cm 🔥")
+        with get_conn() as conn:
+            u = get_user_row(conn, update.effective_chat.id, update.effective_user.id)
+    if not is_registered(u):
+        await update.message.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
+        return
+    await update.message.reply_text(f"🍆 Şu anki boyun: {u['boy']} cm 🔥")
 
 @ensure_group
 async def cmd_boyu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -137,44 +188,45 @@ async def cmd_boyu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     target = msg.reply_to_message.from_user
     async with _db_lock:
-        u = get_user(update.effective_chat.id, target.id)
-        if not is_registered(u):
-            await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
-            return
-        boy = u["boy"]
-    await msg.reply_text(f"🍆 {get_name(target)} boyu: {boy} cm 🔥")
+        with get_conn() as conn:
+            u = get_user_row(conn, update.effective_chat.id, target.id)
+    if not is_registered(u):
+        await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
+        return
+    await msg.reply_text(f"🍆 {get_name(target)} boyu: {u['boy']} cm 🔥")
 
 @ensure_group
 async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    now = now_tr()
+    now  = now_tr()
+    name = get_name(update.effective_user)
     async with _db_lock:
-        u    = get_user(update.effective_chat.id, update.effective_user.id)
-        name = get_name(update.effective_user)
-        if u["uzat_reset"]:
-            reset_time = datetime.fromisoformat(u["uzat_reset"])
-            if now >= reset_time:
-                u["uzat_hak"]   = 2
-                u["uzat_reset"] = None
-        if u["uzat_hak"] <= 0:
-            reset_time = datetime.fromisoformat(u["uzat_reset"])
-            kalan      = reset_time - now
-            total_sec  = int(kalan.total_seconds())
-            h, rem     = divmod(total_sec, 3600)
-            m, _       = divmod(rem, 60)
-            await update.message.reply_text(
-                f"⏳ Bu periyot için 2 hakkını doldurdun. Kalan: {h}s {m}dk"
-            )
-            return
-        ekle            = random.randint(2, 10)
-        u["boy"]       += ekle
-        u["registered"] = True
-        u["uzat_hak"]  -= 1
-        u["name"]       = name
-        if u["uzat_reset"] is None:
-            u["uzat_reset"] = (now + timedelta(hours=12)).isoformat()
-        suffix = "💡 Hala 1 hakkın daha var!" if u["uzat_hak"] == 1 else "💤 Bu periyotluk bitti."
-        boy    = u["boy"]
-        await _save_to_disk()
+        with get_conn() as conn:
+            u = get_user_row(conn, update.effective_chat.id, update.effective_user.id)
+            if u["uzat_reset"]:
+                reset_time = datetime.fromisoformat(u["uzat_reset"])
+                if now >= reset_time:
+                    u["uzat_hak"]   = 2
+                    u["uzat_reset"] = None
+            if u["uzat_hak"] <= 0:
+                reset_time = datetime.fromisoformat(u["uzat_reset"])
+                kalan      = reset_time - now
+                total_sec  = int(kalan.total_seconds())
+                h, rem     = divmod(total_sec, 3600)
+                m, _       = divmod(rem, 60)
+                await update.message.reply_text(
+                    f"⏳ Bu periyot için 2 hakkını doldurdun. Kalan: {h}s {m}dk"
+                )
+                return
+            ekle           = random.randint(2, 10)
+            u["boy"]      += ekle
+            u["registered"] = 1
+            u["uzat_hak"] -= 1
+            u["name"]      = name
+            if u["uzat_reset"] is None:
+                u["uzat_reset"] = (now + timedelta(hours=12)).isoformat()
+            suffix = "💡 Hala 1 hakkın daha var!" if u["uzat_hak"] == 1 else "💤 Bu periyotluk bitti."
+            boy = u["boy"]
+            save_user(conn, u)
     await update.message.reply_text(
         f"🔥 HELAL OLSUN {name}!\n"
         f"🍆 Tam {ekle} cm uzattın!\n"
@@ -186,16 +238,16 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_siralama(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = str(update.effective_chat.id)
     async with _db_lock:
-        group  = _db.get(cid, {})
-        ranked = [(uid, dict(data)) for uid, data in group.items() if data.get("registered")]
-    ranked.sort(key=lambda x: x[1]["boy"], reverse=True)
-    ranked  = ranked[:25]
-    medals  = ["🥇", "🥈", "🥉"]
-    lines   = ["🏆 Grup Penis Boyu Sıralaması:\n"]
-    for i, (uid, data) in enumerate(ranked):
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT name, boy FROM users WHERE chat_id=? AND registered=1 ORDER BY boy DESC LIMIT 25",
+                (cid,)
+            ).fetchall()
+    medals = ["🥇", "🥈", "🥉"]
+    lines  = ["🏆 Grup Penis Boyu Sıralaması:\n"]
+    for i, row in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
-        name  = data.get("name", f"Kullanıcı {uid}")
-        lines.append(f"{medal} {name} — {data['boy']} cm")
+        lines.append(f"{medal} {row['name'] or 'Bilinmeyen'} — {row['boy']} cm")
     lines.append("\nKimin borusu ne kadar öttü bakalım 😎🍆")
     await update.message.reply_text("\n".join(lines))
 
@@ -208,7 +260,8 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Kullanım: /yt <miktar> veya /yt all")
         return
     async with _db_lock:
-        u = get_user(cid, uid)
+        with get_conn() as conn:
+            u = get_user_row(conn, cid, uid)
         if not is_registered(u):
             await update.message.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
             return
@@ -289,34 +342,35 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"🪙 Para havada...\nSeçimin: {secim}")
     await asyncio.sleep(random.randint(2, 3))
     async with _db_lock:
-        u    = get_user(cid, caller_uid)
-        condom_active = bool(
-            u.get("condom_active_until") and
-            now_tr() < datetime.fromisoformat(u["condom_active_until"])
-        )
-        if bahis > u["boy"]:
-            await query.edit_message_text(f"❗ Oyun sırasında boyun değişti, bahis iptal! Mevcut: {u['boy']} cm")
-            return
-        kazandi = random.random() < (0.65 if condom_active else 0.50)
-        if kazandi:
-            u["boy"] += bahis
-            msg = (
-                f"🎉 KAZANDIN!\n"
-                f"🎲 Seçimin: {secim}\n"
-                f"🎁 Kazanç: +{bahis} cm\n"
-                f"📏 Yeni Boy: {u['boy']} cm"
+        with get_conn() as conn:
+            u = get_user_row(conn, cid, caller_uid)
+            condom_active = bool(
+                u.get("condom_active_until") and
+                now_tr() < datetime.fromisoformat(u["condom_active_until"])
             )
-        else:
-            gelen    = "TURA" if secim == "YAZI" else "YAZI"
-            u["boy"] = max(0, u["boy"] - bahis)
-            msg = (
-                f"❌ KAYBETTİN!\n"
-                f"✅ Seçimin: {secim}\n"
-                f"🎲 Gelen: {gelen}\n"
-                f"📉 Giden: -{bahis} cm\n"
-                f"📏 Yeni Boy: {u['boy']} cm"
-            )
-        await _save_to_disk()
+            if bahis > u["boy"]:
+                await query.edit_message_text(f"❗ Oyun sırasında boyun değişti, bahis iptal! Mevcut: {u['boy']} cm")
+                return
+            kazandi = random.random() < (0.65 if condom_active else 0.50)
+            if kazandi:
+                u["boy"] += bahis
+                msg = (
+                    f"🎉 KAZANDIN!\n"
+                    f"🎲 Seçimin: {secim}\n"
+                    f"🎁 Kazanç: +{bahis} cm\n"
+                    f"📏 Yeni Boy: {u['boy']} cm"
+                )
+            else:
+                gelen    = "TURA" if secim == "YAZI" else "YAZI"
+                u["boy"] = max(0, u["boy"] - bahis)
+                msg = (
+                    f"❌ KAYBETTİN!\n"
+                    f"✅ Seçimin: {secim}\n"
+                    f"🎲 Gelen: {gelen}\n"
+                    f"📉 Giden: -{bahis} cm\n"
+                    f"📏 Yeni Boy: {u['boy']} cm"
+                )
+            save_user(conn, u)
     await query.edit_message_text(msg)
 
 @ensure_group
@@ -339,9 +393,10 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     tid = str(target_user.id)
     async with _db_lock:
-        u   = get_user(cid, uid)
-        t   = get_user(cid, tid)
-        arg = ctx.args[0].lower()
+        with get_conn() as conn:
+            u   = get_user_row(conn, cid, uid)
+            t   = get_user_row(conn, cid, tid)
+        arg   = ctx.args[0].lower()
         bahis = u["boy"] if arg == "all" else None
         if bahis is None:
             try:
@@ -438,24 +493,26 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⚔️ Düello başladı, sonuç hesaplanıyor...")
     await asyncio.sleep(random.randint(2, 3))
     async with _db_lock:
-        u = get_user(cid, challenger_uid)
-        t = get_user(cid, target_uid)
-        condom_u = bool(u.get("condom_active_until") and now_tr() < datetime.fromisoformat(u["condom_active_until"]))
-        condom_t = bool(t.get("condom_active_until") and now_tr() < datetime.fromisoformat(t["condom_active_until"]))
-        u_chance = max(0.1, min(0.9, 0.50 + (0.075 if condom_u else 0) - (0.075 if condom_t else 0)))
-        if bahis > u["boy"] or bahis > t["boy"]:
-            await query.message.reply_text("❗ Düello sırasında boy değişti, VS iptal!")
-            return
-        if random.random() < u_chance:
-            winner_name, loser_name = challenger_name, target_name
-            u["boy"] += bahis
-            t["boy"]  = max(0, t["boy"] - bahis)
-        else:
-            winner_name, loser_name = target_name, challenger_name
-            t["boy"] += bahis
-            u["boy"]  = max(0, u["boy"] - bahis)
-        u_boy, t_boy = u["boy"], t["boy"]
-        await _save_to_disk()
+        with get_conn() as conn:
+            u = get_user_row(conn, cid, challenger_uid)
+            t = get_user_row(conn, cid, target_uid)
+            condom_u = bool(u.get("condom_active_until") and now_tr() < datetime.fromisoformat(u["condom_active_until"]))
+            condom_t = bool(t.get("condom_active_until") and now_tr() < datetime.fromisoformat(t["condom_active_until"]))
+            u_chance = max(0.1, min(0.9, 0.50 + (0.075 if condom_u else 0) - (0.075 if condom_t else 0)))
+            if bahis > u["boy"] or bahis > t["boy"]:
+                await query.message.reply_text("❗ Düello sırasında boy değişti, VS iptal!")
+                return
+            if random.random() < u_chance:
+                winner_name, loser_name = challenger_name, target_name
+                u["boy"] += bahis
+                t["boy"]  = max(0, t["boy"] - bahis)
+            else:
+                winner_name, loser_name = target_name, challenger_name
+                t["boy"] += bahis
+                u["boy"]  = max(0, u["boy"] - bahis)
+            u_boy, t_boy = u["boy"], t["boy"]
+            save_user(conn, u)
+            save_user(conn, t)
     await query.message.reply_text(
         f"💦 VS SONUCU!\n\n"
         f"👑 Kazanan: {winner_name} (+{bahis} cm)\n"
@@ -468,36 +525,37 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = now_tr()
     async with _db_lock:
-        u              = get_user(update.effective_chat.id, update.effective_user.id)
-        active_until   = datetime.fromisoformat(u["condom_active_until"])   if u.get("condom_active_until")   else None
-        cooldown_until = datetime.fromisoformat(u["condom_cooldown_until"]) if u.get("condom_cooldown_until") else None
-        condom_active  = bool(active_until   and now < active_until)
-        in_cooldown    = bool(cooldown_until and now < cooldown_until)
-        if condom_active or in_cooldown:
-            aktif_mi = "Evet ✅" if condom_active else "Hayır ❌"
-            if in_cooldown:
-                secs     = int((cooldown_until - now).total_seconds())
-                h, rem   = divmod(secs, 3600)
-                m, _     = divmod(rem, 60)
-                kalan_cd = f"{h} saat {m} dakika"
-            else:
-                kalan_cd = "Hazır!"
-            au_str = active_until.strftime("%H:%M:%S")   if active_until   else "-"
-            cu_str = cooldown_until.strftime("%H:%M:%S") if cooldown_until else "-"
-            await update.message.reply_text(
-                f"⏳ Condom bekleme süresinde!\n\n"
-                f"🛡️ Şu an aktif mi: {aktif_mi}\n"
-                f"⌛ Tekrar kullanım için kalan: {kalan_cd}\n"
-                f"🕒 Aktiflik bitişi: {au_str}\n"
-                f"🔁 Cooldown bitişi: {cu_str}"
-            )
-            return
-        new_active                 = now + timedelta(minutes=15)
-        new_cooldown               = now + timedelta(hours=2)
-        u["condom_active_until"]   = new_active.isoformat()
-        u["condom_cooldown_until"] = new_cooldown.isoformat()
-        au_str                     = new_active.strftime("%H:%M:%S")
-        await _save_to_disk()
+        with get_conn() as conn:
+            u              = get_user_row(conn, update.effective_chat.id, update.effective_user.id)
+            active_until   = datetime.fromisoformat(u["condom_active_until"])   if u.get("condom_active_until")   else None
+            cooldown_until = datetime.fromisoformat(u["condom_cooldown_until"]) if u.get("condom_cooldown_until") else None
+            condom_active  = bool(active_until   and now < active_until)
+            in_cooldown    = bool(cooldown_until and now < cooldown_until)
+            if condom_active or in_cooldown:
+                aktif_mi = "Evet ✅" if condom_active else "Hayır ❌"
+                if in_cooldown:
+                    secs     = int((cooldown_until - now).total_seconds())
+                    h, rem   = divmod(secs, 3600)
+                    m, _     = divmod(rem, 60)
+                    kalan_cd = f"{h} saat {m} dakika"
+                else:
+                    kalan_cd = "Hazır!"
+                au_str = active_until.strftime("%H:%M:%S")   if active_until   else "-"
+                cu_str = cooldown_until.strftime("%H:%M:%S") if cooldown_until else "-"
+                await update.message.reply_text(
+                    f"⏳ Condom bekleme süresinde!\n\n"
+                    f"🛡️ Şu an aktif mi: {aktif_mi}\n"
+                    f"⌛ Tekrar kullanım için kalan: {kalan_cd}\n"
+                    f"🕒 Aktiflik bitişi: {au_str}\n"
+                    f"🔁 Cooldown bitişi: {cu_str}"
+                )
+                return
+            new_active                   = now + timedelta(minutes=15)
+            new_cooldown                 = now + timedelta(hours=2)
+            u["condom_active_until"]   = new_active.isoformat()
+            u["condom_cooldown_until"] = new_cooldown.isoformat()
+            au_str                       = new_active.strftime("%H:%M:%S")
+            save_user(conn, u)
     await update.message.reply_text(
         f"🛡️ CONDOM TAKILDI!\n\n"
         f"🎲 15 dakika boyunca şansın arttı.\n"
@@ -521,59 +579,68 @@ async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid   = str(target_user.id)
     today = today_str()
     async with _db_lock:
-        u = get_user(cid, uid)
-        t = get_user(cid, tid)
-        if not is_registered(u):
-            await msg.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
-            return
-        if not is_registered(t):
-            await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
-            return
-        if u.get("thief_date") != today:
-            u["thief_daily"] = {}
-            u["thief_date"]  = today
-        count = u["thief_daily"].get(tid, 0)
-        if count >= 3:
-            await msg.reply_text(f"🚫 Bugün {get_name(target_user)} kişisinden zaten 3 kez çalmaya çalıştın.")
-            return
-        u["thief_daily"][tid] = count + 1
-        oran         = random.randint(1, 6)
-        basari_sansi = random.randint(5, 30)
-        kazandi      = random.randint(1, 100) <= basari_sansi
-        kalan        = 3 - u["thief_daily"][tid]
-        my_name      = get_name(update.effective_user)
-        target_name  = get_name(target_user)
-        if kazandi:
-            calinan        = max(1, round(t["boy"] * oran / 100))
-            eski_u, eski_t = u["boy"], t["boy"]
-            u["boy"]      += calinan
-            t["boy"]       = max(0, t["boy"] - calinan)
-            await _save_to_disk()
-            reply = (
-                f"🕵️ HIRSIZLIK BAŞARILI!\n\n"
-                f"😈 {my_name}, {target_name} kişisinin boyundan çaldı!\n"
-                f"🎯 Çalınan oran: %{oran}\n"
-                f"🎲 Başarı şansı: %{basari_sansi}\n"
-                f"🍆 Çalınan: +{calinan} cm\n\n"
-                f"📏 {my_name}: {eski_u} → {u['boy']} cm\n"
-                f"🤏 {target_name}: {eski_t} → {t['boy']} cm\n\n"
-                f"🔁 Kalan deneme: {kalan}"
-            )
-        else:
-            ceza     = max(1, round(u["boy"] * 1 / 100))
-            eski_u   = u["boy"]
-            u["boy"] = max(0, u["boy"] - ceza)
-            await _save_to_disk()
-            reply = (
-                f"🚨 YAKALANDIN!\n\n"
-                f"👮 {my_name}, {target_name} kişisinden çalmaya çalışırken enselendi!\n"
-                f"🎯 Denenen oran: %{oran}\n"
-                f"🎲 Başarı şansı: %{basari_sansi}\n"
-                f"📉 Ceza: -{ceza} cm\n\n"
-                f"📏 {my_name}: {eski_u} → {u['boy']} cm\n"
-                f"🛡️ {target_name}: {t['boy']} cm ile sağlam kaldı.\n\n"
-                f"🔁 Kalan deneme: {kalan}"
-            )
+        with get_conn() as conn:
+            u = get_user_row(conn, cid, uid)
+            t = get_user_row(conn, cid, tid)
+            if not is_registered(u):
+                await msg.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
+                return
+            if not is_registered(t):
+                await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
+                return
+            # thief daily count
+            td_row = conn.execute(
+                "SELECT count FROM thief_daily WHERE chat_id=? AND user_id=? AND target_id=? AND date=?",
+                (cid, uid, tid, today)
+            ).fetchone()
+            count = td_row["count"] if td_row else 0
+            if count >= 3:
+                await msg.reply_text(f"🚫 Bugün {get_name(target_user)} kişisinden zaten 3 kez çalmaya çalıştın.")
+                return
+            new_count = count + 1
+            conn.execute("""
+                INSERT INTO thief_daily (chat_id, user_id, target_id, count, date)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(chat_id,user_id,target_id) DO UPDATE SET count=excluded.count, date=excluded.date
+            """, (cid, uid, tid, new_count, today))
+            oran         = random.randint(1, 6)
+            basari_sansi = random.randint(5, 30)
+            kazandi      = random.randint(1, 100) <= basari_sansi
+            kalan        = 3 - new_count
+            my_name      = get_name(update.effective_user)
+            target_name  = get_name(target_user)
+            if kazandi:
+                calinan        = max(1, round(t["boy"] * oran / 100))
+                eski_u, eski_t = u["boy"], t["boy"]
+                u["boy"]      += calinan
+                t["boy"]       = max(0, t["boy"] - calinan)
+                save_user(conn, u)
+                save_user(conn, t)
+                reply = (
+                    f"🕵️ HIRSIZLIK BAŞARILI!\n\n"
+                    f"😈 {my_name}, {target_name} kişisinin boyundan çaldı!\n"
+                    f"🎯 Çalınan oran: %{oran}\n"
+                    f"🎲 Başarı şansı: %{basari_sansi}\n"
+                    f"🍆 Çalınan: +{calinan} cm\n\n"
+                    f"📏 {my_name}: {eski_u} → {u['boy']} cm\n"
+                    f"🤏 {target_name}: {eski_t} → {t['boy']} cm\n\n"
+                    f"🔁 Kalan deneme: {kalan}"
+                )
+            else:
+                ceza     = max(1, round(u["boy"] * 1 / 100))
+                eski_u   = u["boy"]
+                u["boy"] = max(0, u["boy"] - ceza)
+                save_user(conn, u)
+                reply = (
+                    f"🚨 YAKALANDIN!\n\n"
+                    f"👮 {my_name}, {target_name} kişisinden çalmaya çalışırken enselendi!\n"
+                    f"🎯 Denenen oran: %{oran}\n"
+                    f"🎲 Başarı şansı: %{basari_sansi}\n"
+                    f"📉 Ceza: -{ceza} cm\n\n"
+                    f"📏 {my_name}: {eski_u} → {u['boy']} cm\n"
+                    f"🛡️ {target_name}: {t['boy']} cm ile sağlam kaldı.\n\n"
+                    f"🔁 Kalan deneme: {kalan}"
+                )
     await msg.reply_text(reply)
 
 @ensure_group
@@ -602,39 +669,53 @@ async def cmd_yolla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid   = str(target_user.id)
     today = today_str()
     async with _db_lock:
-        u = get_user(cid, uid)
-        t = get_user(cid, tid)
-        if not is_registered(u):
-            await msg.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
-            return
-        if not is_registered(t):
-            await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
-            return
-        if u.get("yolla_total_date") != today:
-            u["yolla_total"] = 0
-            u["yolla_daily"] = {}
-            u["yolla_total_date"] = today
-        if u["yolla_total"] >= 5:
-            await msg.reply_text("🚫 Bugünkü 5 gönderim hakkını doldurdun!")
-            return
-        count_to_target = u["yolla_daily"].get(tid, 0)
-        if count_to_target >= 3:
-            await msg.reply_text(f"🚫 Bugün {get_name(target_user)} kişisine zaten 3 kez yolladın.")
-            return
-        if miktar > u["boy"]:
-            await msg.reply_text(f"❗ Yeterli boyun yok! Mevcut: {u['boy']} cm")
-            return
-        eski_u, eski_t        = u["boy"], t["boy"]
-        u["boy"]             -= miktar
-        t["boy"]             += miktar
-        u["yolla_total"]     += 1
-        u["yolla_daily"][tid] = count_to_target + 1
-        my_name               = get_name(update.effective_user)
-        target_name           = get_name(target_user)
-        toplam_kalan          = 5 - u["yolla_total"]
-        kisi_kalan            = 3 - u["yolla_daily"][tid]
-        u_boy, t_boy          = u["boy"], t["boy"]
-        await _save_to_disk()
+        with get_conn() as conn:
+            u = get_user_row(conn, cid, uid)
+            t = get_user_row(conn, cid, tid)
+            if not is_registered(u):
+                await msg.reply_text("❗ Daha kaydın yok, önce /uzat kullan!")
+                return
+            if not is_registered(t):
+                await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
+                return
+            # reset daily totals if needed
+            if u.get("yolla_total_date") != today:
+                u["yolla_total"]      = 0
+                u["yolla_total_date"] = today
+                conn.execute(
+                    "DELETE FROM yolla_daily WHERE chat_id=? AND user_id=?", (cid, uid)
+                )
+            if u["yolla_total"] >= 5:
+                await msg.reply_text("🚫 Bugünkü 5 gönderim hakkını doldurdun!")
+                return
+            yd_row = conn.execute(
+                "SELECT count FROM yolla_daily WHERE chat_id=? AND user_id=? AND target_id=? AND date=?",
+                (cid, uid, tid, today)
+            ).fetchone()
+            count_to_target = yd_row["count"] if yd_row else 0
+            if count_to_target >= 3:
+                await msg.reply_text(f"🚫 Bugün {get_name(target_user)} kişisine zaten 3 kez yolladın.")
+                return
+            if miktar > u["boy"]:
+                await msg.reply_text(f"❗ Yeterli boyun yok! Mevcut: {u['boy']} cm")
+                return
+            eski_u, eski_t        = u["boy"], t["boy"]
+            u["boy"]             -= miktar
+            t["boy"]             += miktar
+            u["yolla_total"]     += 1
+            new_yd_count          = count_to_target + 1
+            conn.execute("""
+                INSERT INTO yolla_daily (chat_id, user_id, target_id, count, date)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(chat_id,user_id,target_id) DO UPDATE SET count=excluded.count, date=excluded.date
+            """, (cid, uid, tid, new_yd_count, today))
+            my_name      = get_name(update.effective_user)
+            target_name  = get_name(target_user)
+            toplam_kalan = 5 - u["yolla_total"]
+            kisi_kalan   = 3 - new_yd_count
+            u_boy, t_boy = u["boy"], t["boy"]
+            save_user(conn, u)
+            save_user(conn, t)
     await msg.reply_text(
         f"🎁 TRANSFERİ BAŞARILI!\n\n"
         f"📤 Gönderen: {my_name}\n"
@@ -694,29 +775,32 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     kod = ctx.args[0].upper()
     async with _db_lock:
-        promolar = _db.get("__promolar__", {})
-        if kod not in promolar:
-            await update.message.reply_text("❌ Geçersiz kod!")
-            return
-        promo      = promolar[kod]
-        expires_dt = datetime.fromisoformat(promo["expires"])
-        if now_tr() > expires_dt:
-            await update.message.reply_text("❌ Bu kodun süresi dolmuş!")
-            return
-        uid = str(update.effective_user.id)
-        cid = str(update.effective_chat.id)
-        if uid in promo.get("used_by", []):
-            await update.message.reply_text("❌ Bu kodu zaten kullandın!")
-            return
-        await update.message.reply_text("🎁 Kod doğrulanıyor...")
-        await asyncio.sleep(random.randint(2, 3))
-        u               = get_user(cid, uid)
-        miktar          = promo["miktar"]
-        eski            = u["boy"]
-        u["boy"]       += miktar
-        u["registered"] = True
-        promo.setdefault("used_by", []).append(uid)
-        await _save_to_disk()
+        with get_conn() as conn:
+            promo = conn.execute("SELECT * FROM promos WHERE kod=?", (kod,)).fetchone()
+            if not promo:
+                await update.message.reply_text("❌ Geçersiz kod!")
+                return
+            promo = dict(promo)
+            if now_tr() > datetime.fromisoformat(promo["expires"]):
+                await update.message.reply_text("❌ Bu kodun süresi dolmuş!")
+                return
+            uid = str(update.effective_user.id)
+            cid = str(update.effective_chat.id)
+            used = conn.execute(
+                "SELECT 1 FROM promo_used WHERE kod=? AND user_id=?", (kod, uid)
+            ).fetchone()
+            if used:
+                await update.message.reply_text("❌ Bu kodu zaten kullandın!")
+                return
+            await update.message.reply_text("🎁 Kod doğrulanıyor...")
+            await asyncio.sleep(random.randint(2, 3))
+            u               = get_user_row(conn, cid, uid)
+            miktar          = promo["miktar"]
+            eski            = u["boy"]
+            u["boy"]       += miktar
+            u["registered"] = 1
+            save_user(conn, u)
+            conn.execute("INSERT INTO promo_used (kod, user_id) VALUES (?,?)", (kod, uid))
     await update.message.reply_text(
         f"🎉 PROMO AKTİF!\n\n"
         f"📏 Eklenen: +{miktar} cm\n"
@@ -740,8 +824,11 @@ async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     expires = (now_tr() + timedelta(days=gun)).isoformat()
     async with _db_lock:
-        _db.setdefault("__promolar__", {})[kod] = {"miktar": miktar, "expires": expires, "used_by": []}
-        await _save_to_disk()
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO promos (kod, miktar, expires) VALUES (?,?,?)",
+                (kod, miktar, expires)
+            )
     await update.message.reply_text(
         f"✅ PROMOKOD OLUŞTURULDU!\n\n"
         f"🎟️ KOD: {kod}\n"
@@ -765,8 +852,11 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kod     = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
     expires = (now_tr() + timedelta(days=gun)).isoformat()
     async with _db_lock:
-        _db.setdefault("__promolar__", {})[kod] = {"miktar": miktar, "expires": expires, "used_by": []}
-        await _save_to_disk()
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO promos (kod, miktar, expires) VALUES (?,?,?)",
+                (kod, miktar, expires)
+            )
     await update.message.reply_text(
         f"✅ RASTGELE PROMOKOD OLUŞTURULDU!\n\n"
         f"🎟️ KOD: {kod}\n"
@@ -779,23 +869,23 @@ async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
         return
     async with _db_lock:
-        grup_cidler      = [k for k in _db.keys() if not k.startswith("__")]
-        toplam_kullanici = 0
-        toplam_boy       = 0
-        for cid in grup_cidler:
-            for uid, data in _db[cid].items():
-                if data.get("registered"):
-                    toplam_kullanici += 1
-                    toplam_boy       += data.get("boy", 0)
-    ort_boy      = round(toplam_boy / toplam_kullanici) if toplam_kullanici > 0 else 0
-    toplam_promo = len(_db.get("__promolar__", {}))
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT chat_id) as grups, COUNT(*) as users, SUM(boy) as total_boy "
+                "FROM users WHERE registered=1"
+            ).fetchone()
+            promo_count = conn.execute("SELECT COUNT(*) as c FROM promos").fetchone()["c"]
+    total   = row["total_boy"] or 0
+    users   = row["users"]     or 0
+    grups   = row["grups"]     or 0
+    ort_boy = round(total / users) if users > 0 else 0
     await update.message.reply_text(
         f"📊 BOT İSTATİSTİKLERİ\n\n"
-        f"👥 Toplam grup: {len(grup_cidler)}\n"
-        f"👤 Toplam kayıtlı kullanıcı: {toplam_kullanici}\n"
-        f"🍆 Toplam boy: {toplam_boy} cm\n"
+        f"👥 Toplam grup: {grups}\n"
+        f"👤 Toplam kayıtlı kullanıcı: {users}\n"
+        f"🍆 Toplam boy: {total} cm\n"
         f"📏 Ortalama boy: {ort_boy} cm\n"
-        f"🎟️ Promo kod sayısı: {toplam_promo}"
+        f"🎟️ Promo kod sayısı: {promo_count}"
     )
 
 async def cmd_disistatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -803,16 +893,18 @@ async def cmd_disistatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
         return
     async with _db_lock:
-        snap = {k: dict(v) for k, v in _db.items() if not k.startswith("__")}
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT chat_id, name, boy FROM users WHERE registered=1 ORDER BY chat_id, boy DESC"
+            ).fetchall()
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["chat_id"], []).append(row)
     lines = ["📈 DETAYLI İSTATİSTİKLER\n"]
-    for cid, users in snap.items():
-        kayitli = [(uid, d) for uid, d in users.items() if d.get("registered")]
-        if not kayitli:
-            continue
-        kayitli.sort(key=lambda x: x[1]["boy"], reverse=True)
-        lines.append(f"🏠 Grup: {cid} — {len(kayitli)} kişi")
-        for i, (uid, d) in enumerate(kayitli[:5]):
-            lines.append(f"  {i+1}. {d.get('name', uid)} — {d['boy']} cm")
+    for cid, users in groups.items():
+        lines.append(f"🏠 Grup: {cid} — {len(users)} kişi")
+        for i, u in enumerate(users[:5]):
+            lines.append(f"  {i+1}. {u['name'] or 'Bilinmeyen'} — {u['boy']} cm")
         lines.append("")
     if len(lines) == 1:
         lines.append("Henüz veri yok.")
@@ -837,13 +929,14 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target_user = msg.reply_to_message.from_user
     cid         = str(update.effective_chat.id)
     tid         = str(target_user.id)
+    name        = get_name(target_user)
     async with _db_lock:
-        t               = get_user(cid, tid)
-        t["boy"]        = miktar
-        t["registered"] = True
-        name            = t.get("name") or get_name(target_user)
-        t["name"]       = name
-        await _save_to_disk()
+        with get_conn() as conn:
+            u               = get_user_row(conn, cid, tid)
+            u["boy"]        = miktar
+            u["registered"] = 1
+            u["name"]       = name
+            save_user(conn, u)
     await msg.reply_text(f"✅ {name} artık {miktar} cm!")
 
 async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -852,16 +945,19 @@ async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid  = str(update.effective_chat.id)
     uid  = str(update.effective_user.id)
     name = get_name(update.effective_user)
-    async with _db_lock:
-        _db.setdefault(cid, {}).setdefault(uid, {})["name"] = name
     now_ts = now_tr().timestamp()
     if now_ts - ctx.bot_data.get("last_name_save", 0) > 60:
         ctx.bot_data["last_name_save"] = now_ts
-        await _save_to_disk()
+        async with _db_lock:
+            with get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO users (chat_id, user_id, name) VALUES (?,?,?) "
+                    "ON CONFLICT(chat_id,user_id) DO UPDATE SET name=excluded.name",
+                    (cid, uid, name)
+                )
 
 async def post_init(app: Application):
-    global _db
-    _db = _load_from_disk()
+    init_db()
     commands = [
         BotCommand("start",    "Bota başla"),
         BotCommand("help",     "Komut rehberi"),
