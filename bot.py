@@ -163,31 +163,42 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ── DƏYIŞIKLIK 1: /help yeniləndi ──────────────────────────────────────────
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
         "╔══════ 🍆 PENİSEREN BOT 🍆 ══════╗\n"
         "           🔥 KOMUT REHBERİ 🔥\n"
-        "╚══════════════════════════════════╝\n\n"
+        "╚══════════════════════════════╝\n\n"
         "🏛️ GENEL KOMUTLAR\n"
         "📏 `/boyum` — Kendi penis boyunu gösterir.\n"
-        "👀 `/boyu` — Yanıtladığın kişinin boyunu gösterir.\n"
+        "👀 `/boyu` — Yanıtladığın veya etiketlediğin kişinin boyunu gösterir.\n"
         "⏳ `/uzat` — 12 saatlik periyotta 2 hakla boyunu uzatır.\n"
-        "🏆 `/siralama` — Grubun en büyük 25 listesini gösterir.\n\n"
+        "🏆 `/siralama` — Grubun en büyük 25 listesini gösterir.\n"
+        "📊 `/istatistik` — Bot istatistikleri. _(Admin)_\n"
+        "📈 `/disistatistik` — Detaylı bot istatistikleri. _(Admin)_\n\n"
         "🎰 KUMARHANE\n"
         "🪙 `/yt <miktar>` — Yazı tura. Ya katla ya bat!\n"
         "⚔️ `/vs <miktar>` — Yanıtladığın kişiye düello at.\n"
-        "💸 `/yt all` — Tüm boyunla girer.\n\n"
-        "🛡️ ÖZEL GÜÇLER\n"
-        "🛡️ `/condom` — 15 dakika şans buffı. 2 saatte 1 kullanılır.\n"
-        "🕵️ `/thief` veya `/hirsiz` — Yanıtladığın kişiden boy çalmaya çalışır.\n"
-        "💌 `/yolla <miktar>` — Yanıtladığın kişiye boy gönderir.\n\n"
-        "🚀 ETKİLEŞİM\n"
+        "💸 `all` — Bahislerde tüm boyunla girer. Örn: `/yt all`\n\n"
+        "🛡️ ÖZEL GÜÇLER & BONUSLAR\n"
+        "🛡️ `/condom` — 15 dakika şans buffı verir. 2 saatte 1 kullanılır.\n"
+        "   └ YT: +%15 şans, VS: +%7.5 avantaj.\n"
+        "🕵️ `/thief` — Yanıtladığın kişiden %1-6 arası boy çalmaya çalışır.\n"
+        "   └ Alternatif: `/hirsiz`\n"
+        "💌 `/yolla <miktar>` — Yanıtladığın kişiye kendi boyundan gönderir.\n"
+        "   └ Günlük 5 gönderim, aynı kişiye günlük 3 gönderim sınırı.\n\n"
+        "🚀 ETKİLEŞİM KOMUTLARI\n"
         "🔥 `/kaldir` — Yanıtladığın kişiyi gaza getirir.\n"
-        "📉 `/indir` — Yanıtladığın kişiyi gömer.\n\n"
+        "📉 `/indir` — Yanıtladığın kişiyi gömer, modunu düşürür.\n\n"
         "🎁 PROMOSYON\n"
-        "📦 `/promo <kod>` — Promosyon kodunu kullanır.\n\n"
+        "📦 `/promo <kod>` — Promosyon kodunu kullanır.\n"
+        "🎫 `/promokodolustur <miktar> <gün>` — Rastgele promo kod üretir. _(Admin)_\n"
+        "🎟️ `/ozelpromokod <KOD> <miktar> <gün>` — Özel promo kod üretir. _(Admin)_\n\n"
+        "💡 KISA NOTLAR\n"
+        "• Reply gereken komutlar: `/boyu`, `/vs`, `/thief`, `/yolla`, `/kaldir`, `/indir`\n"
+        "• Günlük sayaçlar UTC+3 saatine göre sıfırlanır.\n\n"
         "🌟 EMEĞİ GEÇENLER 🌟\n"
-        "⚡ @emektas\n"
+        "⚡ @emektas & @xArchDev\n"
         "V2"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -255,8 +266,9 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     total_sec  = int(kalan.total_seconds())
                     h, rem     = divmod(total_sec, 3600)
                     m, _       = divmod(rem, 60)
+                    # ── DƏYIŞIKLIK 2: hak bitəndə emoji əlavə edildi, 2 normal yazı ──
                     await update.message.reply_text(
-                        f"⏳ Bu periyot için *2* hakkını doldurdun.\nKalan: *{h} saat {m} dk*",
+                        f"⏳ Bu periyot için 2 hakkını doldurdun.\nKalan: *{h} saat {m} dk*",
                         parse_mode="Markdown"
                     )
                     return
@@ -268,9 +280,9 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if u["uzat_reset"] is None:
                     u["uzat_reset"] = (now + timedelta(hours=12)).isoformat()
                 if u["uzat_hak"] == 1:
-                    suffix = "*Hala 1 hakkın daha var!*"
+                    suffix = "💤 *Hala 1 hakkın daha var!*"
                 else:
-                    suffix = "*Bu periyotluk bitti.*"
+                    suffix = "💤 *Bu periyotluk bitti.*"
                 boy = u["boy"]
                 save_user(cur, u)
             conn.commit()
@@ -379,9 +391,10 @@ async def bet_timeout(ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         try:
+            # ── DƏYIŞIKLIK 3: timeout mesajı yeniləndi ──
             await ctx.bot.send_message(
                 chat_id=int(cid),
-                text=f"⚠️ *{name}*, 20 saniye içinde seçim yapmadın, bahis iptal! 💤",
+                text=f"⚠️ *{name}*, seçim yapmadığın için bahis iptal! 💤",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -605,7 +618,7 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # Kabul - mesajı edit et, sonra sil, yeni mesaj gönder
+    # ── DƏYIŞIKLIK 4: VS kabul mesajı qalır, nəticə ayrı mesaj kimi gəlir ──
     try:
         await query.edit_message_text(
             "✅ *VS kabul edildi!* Sonuç hesaplanıyor...",
@@ -650,11 +663,7 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         t_pct = int(t_chance * 100)
         condom_line = f"\n🛡️ Condom etkisi: meydan okuyan şansı *%{u_pct}* — rakip şansı *%{t_pct}*"
 
-    try:
-        await ctx.bot.delete_message(chat_id=int(cid), message_id=mid)
-    except Exception:
-        pass
-
+    # VS kabul mesajı silinmir, nəticə yeni mesaj kimi göndərilir
     await ctx.bot.send_message(
         chat_id=int(cid),
         text=(
@@ -681,7 +690,8 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 condom_active  = bool(active_until   and now < active_until)
                 in_cooldown    = bool(cooldown_until and now < cooldown_until)
                 if condom_active or in_cooldown:
-                    aktif_mi = "Evet ✅" if condom_active else "Hayır ❌"
+                    # ── DƏYIŞIKLIK 5: bekleme mesajı yeniləndi ──
+                    aktif_str = "Evet ✅" if condom_active else "Hayır ❌"
 
                     def fmt_remain(dt):
                         if dt is None or now >= dt:
@@ -701,14 +711,16 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         if s:  parts.append(f"{s} saniye")
                         return " ".join(parts) if parts else "0 saniye"
 
-                    au_str = fmt_remain(active_until)
-                    cu_str = fmt_remain(cooldown_until)
+                    # mono formatda vaxt göstər
+                    au_mono = active_until.strftime("`%Y-%m-%d %H:%M:%S`")   if active_until   else "`-`"
+                    cu_mono = cooldown_until.strftime("`%Y-%m-%d %H:%M:%S`") if cooldown_until else "`-`"
 
                     await update.message.reply_text(
-                        f"🛡️ *Condom* bekleme süresinde!\n\n"
-                        f"Aktif mi: {aktif_mi}\n"
-                        f"⌛ Aktiflik bitimine kalan: *{au_str}*\n"
-                        f"🔁 Cooldown bitimine kalan: *{cu_str}*",
+                        f"*⏳ Condom bekleme süresinde!*\n\n"
+                        f"🛡️ Şu an aktif mi: *{aktif_str}*\n"
+                        f"⌛ Tekrar kullanım için kalan: *{fmt_remain(cooldown_until)}*\n"
+                        f"🕒 Aktiflik bitişi: {au_mono}\n"
+                        f"🔁 Cooldown bitişi: {cu_mono}",
                         parse_mode="Markdown"
                     )
                     return
@@ -720,12 +732,16 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         finally:
             conn.close()
+
+    # ── DƏYIŞIKLIK 6: condom takıldı mesajı yeniləndi ──
+    active_end_str = (now + timedelta(minutes=15)).strftime("`%Y-%m-%d %H:%M:%S`")
     await update.message.reply_text(
-        f"🛡️ *Condom takıldı!*\n\n"
+        f"*🛡️ CONDOM TAKILDI!*\n\n"
         f"🎲 15 dakika boyunca şansın arttı.\n"
-        f"🪙 YT: *%65* şans | VS: *%57.5* avantaj\n"
-        f"🔁 Tekrar kullanım: *2 saat* sonra\n"
-        f"🕒 Aktiflik süresi: *15 dakika*",
+        f"🪙 YT: *+%15.0 şans*\n"
+        f"⚔️ VS: *+%7.5 avantaj*\n"
+        f"🔁 Tekrar kullanım: *2 saat sonra*\n"
+        f"🕒 Aktiflik bitişi: {active_end_str}",
         parse_mode="Markdown"
     )
 
@@ -733,7 +749,11 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg.reply_to_message:
-        await msg.reply_text("❗ Kullanım: Birine yanıt verip `/thief` yaz.", parse_mode="Markdown")
+        # ── DƏYIŞIKLIK 7: thief boş yazıldığında mesaj yeniləndi ──
+        await msg.reply_text(
+            "❗ Kullanım: Birine yanıt verip `/thief` yaz veya `/thief @kullanici` kullan.",
+            parse_mode="Markdown"
+        )
         return
     target_user = msg.reply_to_message.from_user
     if target_user.id == update.effective_user.id:
@@ -1177,23 +1197,22 @@ async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             finally:
                 conn.close()
 
+# ── DƏYIŞIKLIK 8: /help command siyahısı yeniləndi ─────────────────────────
 async def post_init(app: Application):
     init_db()
     commands = [
-        BotCommand("start",    "Bota başla"),
-        BotCommand("help",     "Komut rehberi"),
-        BotCommand("boyum",    "Kendi boyunu göster"),
-        BotCommand("boyu",     "Yanıtladığın kişinin boyunu göster"),
-        BotCommand("uzat",     "Boyunu uzat"),
-        BotCommand("siralama", "Grup sıralaması"),
-        BotCommand("yt",       "Yazı tura oyna"),
-        BotCommand("vs",       "Düello at"),
-        BotCommand("condom",   "15 dk şans buffı"),
-        BotCommand("thief",    "Boy çalmaya çalış"),
-        BotCommand("yolla",    "Birine boy gönder"),
-        BotCommand("kaldir",   "Birini gaza getir"),
-        BotCommand("indir",    "Birini göm"),
-        BotCommand("promo",    "Promo kodu kullan"),
+        BotCommand("uzat",      "Penis boyunu uzat"),
+        BotCommand("siralama",  "Grup Penis Sıralaması"),
+        BotCommand("boyum",     "Penis Boyun"),
+        BotCommand("condom",    "Şans Arttırıcı Condom"),
+        BotCommand("boyu",      "Seçilen Kişinin Penis boyu"),
+        BotCommand("help",      "Yardım Komutu"),
+        BotCommand("yt",        "Yazı Tura Oyunu"),
+        BotCommand("thief",     "Seçilen Kişiden Penis Çal"),
+        BotCommand("promo",     "Promo Kodu Kullan"),
+        BotCommand("kaldir",    "Seçilen Kişiye Penis Kaldır"),
+        BotCommand("indir",     "Seçilen Kişiye Penis İndir"),
+        BotCommand("yolla",     "Boy gönder"),
     ]
     await app.bot.set_my_commands(commands)
 
