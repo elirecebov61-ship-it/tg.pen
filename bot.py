@@ -46,7 +46,7 @@ def init_db():
                 chat_id               TEXT NOT NULL,
                 user_id               TEXT NOT NULL,
                 name                  TEXT DEFAULT '',
-                boy                   INTEGER DEFAULT 0,
+                boy                   NUMERIC DEFAULT 0,
                 registered            INTEGER DEFAULT 0,
                 uzat_hak              INTEGER DEFAULT 2,
                 uzat_reset            TEXT DEFAULT NULL,
@@ -82,6 +82,9 @@ def init_db():
                 kod     TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 PRIMARY KEY (kod, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS prohere_users (
+                user_id TEXT PRIMARY KEY
             );
         """)
         conn.commit()
@@ -163,7 +166,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ── DƏYIŞIKLIK 1: /help yeniləndi ──────────────────────────────────────────
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
         "╔══════ 🍆 PENİSEREN BOT 🍆 ══════╗\n"
@@ -266,7 +268,6 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     total_sec  = int(kalan.total_seconds())
                     h, rem     = divmod(total_sec, 3600)
                     m, _       = divmod(rem, 60)
-                    # ── DƏYIŞIKLIK 2: hak bitəndə emoji əlavə edildi, 2 normal yazı ──
                     await update.message.reply_text(
                         f"⏳ Bu periyot için 2 hakkını doldurdun.\nKalan: *{h} saat {m} dk*",
                         parse_mode="Markdown"
@@ -391,7 +392,6 @@ async def bet_timeout(ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         try:
-            # ── DƏYIŞIKLIK 3: timeout mesajı yeniləndi ──
             await ctx.bot.send_message(
                 chat_id=int(cid),
                 text=f"⚠️ *{name}*, seçim yapmadığın için bahis iptal! 💤",
@@ -618,7 +618,6 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # ── DƏYIŞIKLIK 4: VS kabul mesajı qalır, nəticə ayrı mesaj kimi gəlir ──
     try:
         await query.edit_message_text(
             "✅ *VS kabul edildi!* Sonuç hesaplanıyor...",
@@ -663,7 +662,6 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         t_pct = int(t_chance * 100)
         condom_line = f"\n🛡️ Condom etkisi: meydan okuyan şansı *%{u_pct}* — rakip şansı *%{t_pct}*"
 
-    # VS kabul mesajı silinmir, nəticə yeni mesaj kimi göndərilir
     await ctx.bot.send_message(
         chat_id=int(cid),
         text=(
@@ -690,7 +688,6 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 condom_active  = bool(active_until   and now < active_until)
                 in_cooldown    = bool(cooldown_until and now < cooldown_until)
                 if condom_active or in_cooldown:
-                    # ── DƏYIŞIKLIK 5: bekleme mesajı yeniləndi ──
                     aktif_str = "Evet ✅" if condom_active else "Hayır ❌"
 
                     def fmt_remain(dt):
@@ -711,7 +708,6 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         if s:  parts.append(f"{s} saniye")
                         return " ".join(parts) if parts else "0 saniye"
 
-                    # mono formatda vaxt göstər
                     au_mono = active_until.strftime("`%Y-%m-%d %H:%M:%S`")   if active_until   else "`-`"
                     cu_mono = cooldown_until.strftime("`%Y-%m-%d %H:%M:%S`") if cooldown_until else "`-`"
 
@@ -733,7 +729,6 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         finally:
             conn.close()
 
-    # ── DƏYIŞIKLIK 6: condom takıldı mesajı yeniləndi ──
     active_end_str = (now + timedelta(minutes=15)).strftime("`%Y-%m-%d %H:%M:%S`")
     await update.message.reply_text(
         f"*🛡️ CONDOM TAKILDI!*\n\n"
@@ -749,7 +744,6 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg.reply_to_message:
-        # ── DƏYIŞIKLIK 7: thief boş yazıldığında mesaj yeniləndi ──
         await msg.reply_text(
             "❗ Kullanım: Birine yanıt verip `/thief` yaz veya `/thief @kullanici` kullan.",
             parse_mode="Markdown"
@@ -1143,9 +1137,21 @@ async def cmd_disistatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
-        return
+    uid_caller = str(update.effective_user.id)
+    is_admin   = (update.effective_user.id == ADMIN_ID)
+
+    if not is_admin:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM prohere_users WHERE user_id=%s", (uid_caller,))
+                allowed = cur.fetchone() is not None
+        finally:
+            conn.close()
+        if not allowed:
+            await update.message.reply_text("🚫 Bu komutu kullanmaya erişimin yok.")
+            return
+
     msg = update.message
     if not msg.reply_to_message:
         await msg.reply_text("❗ Kullanım: Birine yanıt verip `/degistir <miktar>` yaz.", parse_mode="Markdown")
@@ -1153,15 +1159,27 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await msg.reply_text("❗ Kullanım: `/degistir <miktar>`", parse_mode="Markdown")
         return
+
+    val       = ctx.args[0]
+    check_val = val.lstrip("-")
+    if not check_val.isdigit():
+        await msg.reply_text("❗ Geçerli bir sayı gir.")
+        return
+    if len(check_val) > 25:
+        await msg.reply_text("❗ En fazla 25 basamaklı sayı girebilirsin.")
+        return
+
     try:
-        miktar = int(ctx.args[0])
+        miktar = int(val)
     except ValueError:
         await msg.reply_text("❗ Geçerli bir sayı gir.")
         return
+
     target_user = msg.reply_to_message.from_user
     cid         = str(update.effective_chat.id)
     tid         = str(target_user.id)
     name        = get_name(target_user)
+
     async with _db_lock:
         conn = get_conn()
         try:
@@ -1175,6 +1193,65 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         finally:
             conn.close()
     await msg.reply_text(f"✅ *{name}* artık *{miktar} cm*!", parse_mode="Markdown")
+
+async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
+        return
+    msg = update.message
+    if not msg.reply_to_message:
+        await msg.reply_text("❗ Kullanım: Birine yanıt verip `/prohere` yaz.", parse_mode="Markdown")
+        return
+    target_user = msg.reply_to_message.from_user
+    tid         = str(target_user.id)
+    name        = get_name(target_user)
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO prohere_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                    (tid,)
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    await msg.reply_text(
+        f"✅ *{name}* artık bu grupta yetkili!\n"
+        f"🛡️ Artık /degistir komutunu kullanabilir.",
+        parse_mode="Markdown"
+    )
+
+async def cmd_unprohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
+        return
+    msg = update.message
+    if not msg.reply_to_message:
+        await msg.reply_text("❗ Kullanım: Birine yanıt verip `/unprohere` yaz.", parse_mode="Markdown")
+        return
+    target_user = msg.reply_to_message.from_user
+    tid         = str(target_user.id)
+    name        = get_name(target_user)
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM prohere_users WHERE user_id=%s", (tid,))
+                deleted = cur.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+    if deleted:
+        await msg.reply_text(
+            f"🚫 *{name}* bu kullanıcı artık yetkili değil!",
+            parse_mode="Markdown"
+        )
+    else:
+        await msg.reply_text(
+            f"⚠️ *{name}* zaten bu grupta yetkili değil!",
+            parse_mode="Markdown"
+        )
 
 async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or update.effective_chat.type == "private":
@@ -1197,7 +1274,6 @@ async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             finally:
                 conn.close()
 
-# ── DƏYIŞIKLIK 8: /help command siyahısı yeniləndi ─────────────────────────
 async def post_init(app: Application):
     init_db()
     commands = [
@@ -1238,6 +1314,8 @@ def main():
     app.add_handler(CommandHandler("istatistik",      cmd_istatistik))
     app.add_handler(CommandHandler("disistatistik",   cmd_disistatistik))
     app.add_handler(CommandHandler("degistir",        cmd_degistir))
+    app.add_handler(CommandHandler("prohere",         cmd_prohere))
+    app.add_handler(CommandHandler("unprohere",       cmd_unprohere))
     app.add_handler(CallbackQueryHandler(yt_callback, pattern=r"^yt\|"))
     app.add_handler(CallbackQueryHandler(vs_callback, pattern=r"^vs\|"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, cache_name))
