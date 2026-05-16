@@ -82,10 +82,15 @@ def init_db():
             CREATE TABLE IF NOT EXISTS promo_used (
                 kod     TEXT NOT NULL,
                 user_id TEXT NOT NULL,
-                PRIMARY KEY (kod, user_id)
+                chat_id TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (kod, user_id, chat_id)
             );
             CREATE TABLE IF NOT EXISTS prohere_users (
                 user_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS chats (
+                chat_id TEXT PRIMARY KEY,
+                title   TEXT DEFAULT ''
             );
         """)
         conn.commit()
@@ -213,9 +218,6 @@ SLOT_KAYBETTI_MESAJLAR = [
     "🪦 Boyun burada yatıyor. Mezar taşına ne yazsın? 'Bir daha oynama'",
     "🐌 Salyangoz bile daha iyi şans getirir senden!",
 ]
-
-def slot_spin_display(reels: list) -> str:
-    return "| " + " | ".join(reels) + " |"
 
 def random_spin() -> list:
     return [random.choice(SLOT_SEMBOLLER) for _ in range(3)]
@@ -387,10 +389,7 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = str(update.effective_user.id)
     name = get_name(update.effective_user)
     if not ctx.args:
-        await update.message.reply_text(
-            "❗ Kullanım: `/yt <miktar>` veya `/yt all`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❗ Kullanım: `/yt <miktar>` veya `/yt all`", parse_mode="Markdown")
         return
     async with _db_lock:
         conn = get_conn()
@@ -413,8 +412,7 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
     if bahis <= 0 or bahis > u["boy"]:
         await update.message.reply_text(
-            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*",
-            parse_mode="Markdown"
+            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown"
         )
         return
     keyboard = [[
@@ -534,16 +532,10 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg.reply_to_message:
-        await msg.reply_text(
-            "❗ Kullanım: `/vs <miktar>` veya `/vs @kullanici <miktar>`",
-            parse_mode="Markdown"
-        )
+        await msg.reply_text("❗ Kullanım: `/vs <miktar>` veya `/vs @kullanici <miktar>`", parse_mode="Markdown")
         return
     if not ctx.args:
-        await msg.reply_text(
-            "❗ Kullanım: `/vs <miktar>` veya `/vs @kullanici <miktar>`",
-            parse_mode="Markdown"
-        )
+        await msg.reply_text("❗ Kullanım: `/vs <miktar>` veya `/vs @kullanici <miktar>`", parse_mode="Markdown")
         return
     target_user = msg.reply_to_message.from_user
     if target_user.id == update.effective_user.id:
@@ -570,10 +562,7 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             bahis = int(arg)
         except ValueError:
-            await msg.reply_text(
-                "❗ Kullanım: `/vs <miktar>` veya `/vs @kullanici <miktar>`",
-                parse_mode="Markdown"
-            )
+            await msg.reply_text("❗ Kullanım: `/vs <miktar>` veya `/vs @kullanici <miktar>`", parse_mode="Markdown")
             return
     if not is_registered(u):
         await msg.reply_text("❗ Daha kaydın yok, önce `/uzat` kullan!", parse_mode="Markdown")
@@ -582,16 +571,10 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("❗ Rakip kayıtlı değil.")
         return
     if bahis <= 0 or bahis > u["boy"]:
-        await msg.reply_text(
-            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*",
-            parse_mode="Markdown"
-        )
+        await msg.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown")
         return
     if bahis > t["boy"]:
-        await msg.reply_text(
-            f"❗ Rakibin yeterli boyu yok! Mevcut: *{t['boy']} cm*",
-            parse_mode="Markdown"
-        )
+        await msg.reply_text(f"❗ Rakibin yeterli boyu yok! Mevcut: *{t['boy']} cm*", parse_mode="Markdown")
         return
     challenger_name = get_name(update.effective_user)
     target_name     = get_name(target_user)
@@ -797,10 +780,7 @@ async def cmd_bk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = str(update.effective_user.id)
     name = get_name(update.effective_user)
     if not ctx.args:
-        await update.message.reply_text(
-            "❗ Kullanım: `/bk <miktar>` veya `/bk all`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❗ Kullanım: `/bk <miktar>` veya `/bk all`", parse_mode="Markdown")
         return
     async with _db_lock:
         conn = get_conn()
@@ -823,8 +803,7 @@ async def cmd_bk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
     if bahis <= 0 or bahis > u["boy"]:
         await update.message.reply_text(
-            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*",
-            parse_mode="Markdown"
+            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown"
         )
         return
     keyboard = [[
@@ -956,10 +935,7 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = str(update.effective_user.id)
     name = get_name(update.effective_user)
     if not ctx.args:
-        await update.message.reply_text(
-            "❗ Kullanım: `/slot <miktar>` veya `/slot all`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❗ Kullanım: `/slot <miktar>` veya `/slot all`", parse_mode="Markdown")
         return
     async with _db_lock:
         conn = get_conn()
@@ -982,8 +958,7 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
     if bahis <= 0 or bahis > u["boy"]:
         await update.message.reply_text(
-            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*",
-            parse_mode="Markdown"
+            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown"
         )
         return
     sent = await update.message.reply_text(
@@ -1036,14 +1011,14 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     else:
                         sonuc = "kayip"
                 if sonuc == "jackpot":
-                    sembol  = random.choice(SLOT_SEMBOLLER)
-                    reels   = [sembol, sembol, sembol]
-                    kazanc  = bahis * 3
+                    sembol   = random.choice(SLOT_SEMBOLLER)
+                    reels    = [sembol, sembol, sembol]
+                    kazanc   = bahis * 3
                     u["boy"] += kazanc
-                    durum   = "JACKPOT! 🤑 (x4)"
-                    degisim = f"+{kazanc}"
-                    alay    = random.choice(SLOT_JACKPOT_MESAJLAR)
-                    condom_str = f"\n🛡️ Condom etkisi aktifti" if condom_active else ""
+                    durum    = "JACKPOT! 🤑 (x4)"
+                    degisim  = f"+{kazanc}"
+                    alay     = random.choice(SLOT_JACKPOT_MESAJLAR)
+                    condom_str = True
                 elif sonuc == "x2":
                     sembol   = random.choice(SLOT_SEMBOLLER)
                     diger    = [s for s in SLOT_SEMBOLLER if s != sembol]
@@ -1056,7 +1031,7 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     durum    = "GÜZEL! 😎 (x2)"
                     degisim  = f"+{kazanc}"
                     alay     = random.choice(SLOT_X2_MESAJLAR)
-                    condom_str = f"\n🛡️ Condom etkisi aktifti" if condom_active else ""
+                    condom_str = True
                 else:
                     s        = random.sample(SLOT_SEMBOLLER, 3)
                     reels    = s
@@ -1065,14 +1040,14 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     durum    = "KAYBETTİN! 🤡"
                     degisim  = f"-{ceza}"
                     alay     = random.choice(SLOT_KAYBETTI_MESAJLAR)
-                    condom_str = ""
+                    condom_str = False
                 yeni_boy = u["boy"]
                 save_user(cur, u)
             conn.commit()
         finally:
             conn.close()
     reel_str    = f"| {reels[0]} | {reels[1]} | {reels[2]} |"
-    condom_line = f"\n🛡️ *Condom etkisi aktifti*" if condom_active else ""
+    condom_line = f"\n🛡️ *Condom etkisi aktifti*" if (condom_active and condom_str) else ""
     result_text = (
         f"🎰 *SLOT SONUCU*\n\n"
         f"👉 {reel_str} 👈\n\n"
@@ -1242,8 +1217,7 @@ async def cmd_yolla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     return
                 if miktar > u["boy"]:
                     await msg.reply_text(
-                        f"❗ Yeterli boyun yok! Mevcut: *{u['boy']} cm*",
-                        parse_mode="Markdown"
+                        f"❗ Yeterli boyun yok! Mevcut: *{u['boy']} cm*", parse_mode="Markdown"
                     )
                     return
                 eski_u, eski_t        = u["boy"], t["boy"]
@@ -1325,6 +1299,8 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Kullanım: `/promo <kod>`", parse_mode="Markdown")
         return
     kod = ctx.args[0].upper()
+    uid = str(update.effective_user.id)
+    cid = str(update.effective_chat.id)
     async with _db_lock:
         conn = get_conn()
         try:
@@ -1338,11 +1314,13 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if now_tr() > datetime.fromisoformat(promo["expires"]):
                     await update.message.reply_text("❌ Bu kodun süresi dolmuş!")
                     return
-                uid = str(update.effective_user.id)
-                cid = str(update.effective_chat.id)
-                cur.execute("SELECT 1 FROM promo_used WHERE kod=%s AND user_id=%s", (kod, uid))
+                # Bu grupta bu kullanıcı daha önce kullandı mı?
+                cur.execute(
+                    "SELECT 1 FROM promo_used WHERE kod=%s AND user_id=%s AND chat_id=%s",
+                    (kod, uid, cid)
+                )
                 if cur.fetchone():
-                    await update.message.reply_text("❌ Bu kodu zaten kullandın!")
+                    await update.message.reply_text("❌ Bu kodu bu grupta zaten kullandın!")
                     return
                 u               = get_user_row(cur, cid, uid)
                 miktar          = promo["miktar"]
@@ -1350,7 +1328,10 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 u["boy"]       += miktar
                 u["registered"] = 1
                 save_user(cur, u)
-                cur.execute("INSERT INTO promo_used (kod, user_id) VALUES (%s,%s)", (kod, uid))
+                cur.execute(
+                    "INSERT INTO promo_used (kod, user_id, chat_id) VALUES (%s,%s,%s)",
+                    (kod, uid, cid)
+                )
             conn.commit()
         finally:
             conn.close()
@@ -1596,7 +1577,12 @@ async def cmd_gruplar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn = get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT DISTINCT chat_id FROM users")
+                cur.execute("""
+                    SELECT u.chat_id, COALESCE(NULLIF(c.title, ''), '?') as title
+                    FROM (SELECT DISTINCT chat_id FROM users) u
+                    LEFT JOIN chats c ON c.chat_id = u.chat_id
+                    ORDER BY u.chat_id
+                """)
                 rows = cur.fetchall()
         finally:
             conn.close()
@@ -1605,7 +1591,7 @@ async def cmd_gruplar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     lines = [f"📋 *Bot'un bulunduğu gruplar:* ({len(rows)} grup)\n"]
     for i, row in enumerate(rows, 1):
-        lines.append(f"{i}. `{row['chat_id']}`")
+        lines.append(f"{i}. *{row['title']}*\n   `{row['chat_id']}`")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def cmd_duyuru(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1613,10 +1599,7 @@ async def cmd_duyuru(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
         return
     if not ctx.args:
-        await update.message.reply_text(
-            "❗ Kullanım: `/duyuru <mesaj>`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❗ Kullanım: `/duyuru <mesaj>`", parse_mode="Markdown")
         return
     mesaj = " ".join(ctx.args)
     async with _db_lock:
@@ -1652,9 +1635,10 @@ async def cmd_duyuru(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or update.effective_chat.type == "private":
         return
-    cid    = str(update.effective_chat.id)
-    uid    = str(update.effective_user.id)
-    name   = get_name(update.effective_user)
+    cid   = str(update.effective_chat.id)
+    uid   = str(update.effective_user.id)
+    name  = get_name(update.effective_user)
+    title = update.effective_chat.title or ""
     now_ts = now_tr().timestamp()
     if now_ts - ctx.bot_data.get("last_name_save", 0) > 60:
         ctx.bot_data["last_name_save"] = now_ts
@@ -1666,6 +1650,10 @@ async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         INSERT INTO users (chat_id, user_id, name) VALUES (%s,%s,%s)
                         ON CONFLICT(chat_id,user_id) DO UPDATE SET name=EXCLUDED.name
                     """, (cid, uid, name))
+                    cur.execute("""
+                        INSERT INTO chats (chat_id, title) VALUES (%s,%s)
+                        ON CONFLICT(chat_id) DO UPDATE SET title=EXCLUDED.title
+                    """, (cid, title))
                 conn.commit()
             finally:
                 conn.close()
