@@ -183,6 +183,45 @@ BK_KAYBETTI_MESAJLAR = [
     "🐌 Salyangoz bile senden hızlı karar verirdi, yine de yanlış seçtin!",
 ]
 
+# ── SLOT EMOJİLERİ VE MESAJLAR ───────────────────────────────────────────────
+
+SLOT_SEMBOLLER = ["🍒", "🍋", "🍇", "🔔", "⭐", "💎", "7️⃣"]
+
+SLOT_JACKPOT_MESAJLAR = [
+    "🚒 İtfaiye çağırın, makine alev alev yanıyor! Motor soğumuyor usta!",
+    "👑 Efsane! Bu makine seni tanrı olarak kabul etti, saygıyla eğiliyoruz!",
+    "💥 JACKPOT! Grubun elektriği gitti şok dalgasından!",
+    "🎰 Makine ağlıyor! Bu kadar mı olur ya, tüm kasayı boşalttın!",
+    "🤑 Para sayma makinesi bile senin yanında ezik kaldı! JACKPOT KRALI!",
+    "🦁 Aslan avlandı! Makine senin önünde diz çöktü!",
+]
+
+SLOT_X2_MESAJLAR = [
+    "🪈 Boruyu öyle bir döşedin ki grubun altyapısı çöktü! Helal olsun!",
+    "😎 Fena değil, fena değil! Makine sana ufak bir jest yaptı.",
+    "🎯 İki eşleşti! Adam gibi kazanç, adam gibi boy!",
+    "🔥 Yarı yolda değil tam yolda! İki eşleşince iş değişiyor!",
+    "💪 Güzel seçim! Makine direnç gösterdi ama sen kazandın!",
+    "🚀 İkili komboda! Devam et, jackpot uzak değil!",
+]
+
+SLOT_KAYBETTI_MESAJLAR = [
+    "🥶 Erzurum soğuğu yemiş gibi içine kaçtı! Cımbız ve büyüteç seti kargoluyoruz, anca bulursun.",
+    "🤡 Makine sana baktı, güldü ve paranı aldı. Saygılar.",
+    "📉 Ekonomik kriz geldi, boy gitti. Devam et bakalım daha ne kadar dayanırsın!",
+    "💀 Makine 1 - Sen 0. Matematik bu, değişmiyor.",
+    "🗿 Taş gibi dondu makine. Çünkü senden almak çok kolaydı.",
+    "😂 Arkadaşların bu anı görseydi, seni gruptan atarlardı. Sus kimseye söyleme.",
+    "🪦 Boyun burada yatıyor. Mezar taşına ne yazsın? 'Bir daha oynama'",
+    "🐌 Salyangoz bile daha iyi şans getirir senden!",
+]
+
+def slot_spin_display(reels: list) -> str:
+    return "| " + " | ".join(reels) + " |"
+
+def random_spin() -> list:
+    return [random.choice(SLOT_SEMBOLLER) for _ in range(3)]
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🍆 KRALLIĞA HOŞ GELDİN!\n\n/help yazarak komutları görebilirsin.",
@@ -205,10 +244,12 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🪙 `/yt <miktar>` — Yazı tura. Ya katla ya bat!\n"
         "⚔️ `/vs <miktar>` — Yanıtladığın kişiye düello at.\n"
         "🃏 `/bk <miktar>` — Bul Karayı! 3 bardaktan birini seç.\n"
+        "🎰 `/slot <miktar>` — Slot makinesi! 3 sembol çevir, şansını dene!\n"
+        "   └ 3 eşleşme = JACKPOT x4 | 2 eşleşme = x2 | Farklı = Kaybettin\n"
         "💸 `all` — Bahislerde tüm boyunla girer. Örn: `/yt all`\n\n"
         "🛡️ ÖZEL GÜÇLER & BONUSLAR\n"
         "🛡️ `/condom` — 15 dakika şans buffı verir. 2 saatte 1 kullanılır.\n"
-        "   └ YT: +%15 şans, VS: +%7.5 avantaj, BK: +%15 şans.\n"
+        "   └ YT: +%15 şans, VS: +%7.5 avantaj, BK: +%15 şans, Slot: +%15 şans.\n"
         "🕵️ `/thief` — Yanıtladığın kişiden %1-6 arası boy çalmaya çalışır.\n"
         "   └ Alternatif: `/hirsiz`\n"
         "💌 `/yolla <miktar>` — Yanıtladığın kişiye kendi boyundan gönderir.\n"
@@ -750,6 +791,7 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🪙 YT: *+%15.0 şans*\n"
         f"⚔️ VS: *+%7.5 avantaj*\n"
         f"🃏 BK: *+%15 şans*\n"
+        f"🎰 Slot: *+%15 şans*\n"
         f"🔁 Tekrar kullanım: *2 saat sonra*\n"
         f"🕒 Aktiflik bitişi: {active_end_str}",
         parse_mode="Markdown"
@@ -930,6 +972,178 @@ async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.close()
 
     await query.edit_message_text(msg, parse_mode="Markdown")
+
+# ── SLOT MAKİNESİ ────────────────────────────────────────────────────────────
+
+@ensure_group
+async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cid  = str(update.effective_chat.id)
+    uid  = str(update.effective_user.id)
+    name = get_name(update.effective_user)
+
+    if not ctx.args:
+        await update.message.reply_text(
+            "❗ Kullanım: `/slot <miktar>` veya `/slot all`",
+            parse_mode="Markdown"
+        )
+        return
+
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                u = get_user_row(cur, cid, uid)
+        finally:
+            conn.close()
+
+    if not is_registered(u):
+        await update.message.reply_text("❗ Daha kaydın yok, önce `/uzat` kullan!", parse_mode="Markdown")
+        return
+
+    arg = ctx.args[0].lower()
+    if arg == "all":
+        bahis = int(u["boy"])
+    else:
+        try:
+            bahis = int(arg)
+        except ValueError:
+            await update.message.reply_text(
+                "❗ Kullanım: `/slot <miktar>` veya `/slot all`",
+                parse_mode="Markdown"
+            )
+            return
+
+    if bahis <= 0 or bahis > u["boy"]:
+        await update.message.reply_text(
+            f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*",
+            parse_mode="Markdown"
+        )
+        return
+
+    # İlk mesajı gönder
+    sent = await update.message.reply_text(
+        f"🎰 *SLOT BAŞLIYOR...*\n"
+        f"👤 {name}\n"
+        f"💰 Bahis: *{bahis} cm*",
+        parse_mode="Markdown"
+    )
+
+    # Animasyon — makaralar dönüyor
+    spin_frames = 6
+    for i in range(spin_frames):
+        frame = random_spin()
+        display = slot_spin_display(frame)
+        try:
+            await sent.edit_text(
+                f"🎰 *SLOT ÇEVİRİLİYOR...*\n\n"
+                f"| {frame[0]} | {frame[1]} | {frame[2]} |\n\n"
+                f"👤 {name}\n"
+                f"💰 Bahis: *{bahis} cm*",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(0.4)
+
+    # Sonucu hesapla
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                u = get_user_row(cur, cid, uid)
+
+                condom_active = bool(
+                    u.get("condom_active_until") and
+                    now_tr() < datetime.fromisoformat(u["condom_active_until"])
+                )
+
+                if bahis > u["boy"]:
+                    try:
+                        await sent.edit_text("❗ Oyun sırasında boyun değişti, slot iptal!")
+                    except Exception:
+                        pass
+                    return
+
+                # Condom etkisi: jackpot ve x2 şansını artırır
+                # Normal:  jackpot ~%3, x2 ~%20, kaybet ~%77
+                # Condom:  jackpot ~%8, x2 ~%35, kaybet ~%57
+                r = random.random()
+                if condom_active:
+                    if r < 0.08:
+                        sonuc = "jackpot"
+                    elif r < 0.43:
+                        sonuc = "x2"
+                    else:
+                        sonuc = "kayip"
+                else:
+                    if r < 0.03:
+                        sonuc = "jackpot"
+                    elif r < 0.23:
+                        sonuc = "x2"
+                    else:
+                        sonuc = "kayip"
+
+                # Makaraları sonuca göre oluştur
+                if sonuc == "jackpot":
+                    sembol  = random.choice(SLOT_SEMBOLLER)
+                    reels   = [sembol, sembol, sembol]
+                    kazanc  = bahis * 3          # bahis 4x döner → +3x eklenir
+                    u["boy"] += kazanc
+                    durum   = "JACKPOT! 🤑 (x4)"
+                    degisim = f"+{kazanc}"
+                    alay    = random.choice(SLOT_JACKPOT_MESAJLAR)
+                    condom_str = f"\n🛡️ Condom etkisi aktifti" if condom_active else ""
+
+                elif sonuc == "x2":
+                    sembol   = random.choice(SLOT_SEMBOLLER)
+                    diger    = [s for s in SLOT_SEMBOLLER if s != sembol]
+                    tek_fark = random.choice(diger)
+                    pos      = random.randint(0, 2)
+                    reels    = [sembol, sembol, sembol]
+                    reels[pos] = tek_fark
+                    kazanc   = bahis              # bahis 2x döner → +1x eklenir
+                    u["boy"] += kazanc
+                    durum    = "GÜZEL! 😎 (x2)"
+                    degisim  = f"+{kazanc}"
+                    alay     = random.choice(SLOT_X2_MESAJLAR)
+                    condom_str = f"\n🛡️ Condom etkisi aktifti" if condom_active else ""
+
+                else:
+                    # 3 farklı sembol garantile
+                    s = random.sample(SLOT_SEMBOLLER, 3)
+                    reels    = s
+                    ceza     = bahis
+                    u["boy"] = max(0, int(u["boy"]) - ceza)
+                    durum    = "KAYBETTİN! 🤡"
+                    degisim  = f"-{ceza}"
+                    alay     = random.choice(SLOT_KAYBETTI_MESAJLAR)
+                    condom_str = ""
+
+                yeni_boy = u["boy"]
+                save_user(cur, u)
+            conn.commit()
+        finally:
+            conn.close()
+
+    # Son mesaj — sonuç aynı mesajın üstüne düşer
+    reel_str = f"| {reels[0]} | {reels[1]} | {reels[2]} |"
+    condom_line = f"\n🛡️ *Condom etkisi aktifti*" if condom_active else ""
+
+    result_text = (
+        f"🎰 *SLOT SONUCU*\n\n"
+        f"👉 {reel_str} 👈\n\n"
+        f"🔔 Durum: *{durum}*\n"
+        f"📉 Değişim: *{degisim} cm*\n"
+        f"📏 Yeni Boy: *{yeni_boy} cm*"
+        f"{condom_line}\n\n"
+        f"💬 {alay}"
+    )
+
+    try:
+        await sent.edit_text(result_text, parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(result_text, parse_mode="Markdown")
+
 
 # ── DİGƏR KOMUTLAR ──────────────────────────────────────────────────────────
 
@@ -1486,6 +1700,7 @@ async def post_init(app: Application):
         BotCommand("help",      "Yardım Komutu"),
         BotCommand("yt",        "Yazı Tura Oyunu"),
         BotCommand("bk",        "Bul Karayı Oyunu"),
+        BotCommand("slot",      "Slot Makinesi Oyunu"),
         BotCommand("thief",     "Seçilen Kişiden Penis Çal"),
         BotCommand("promo",     "Promo Kodu Kullan"),
         BotCommand("kaldir",    "Seçilen Kişiye Penis Kaldır"),
@@ -1505,6 +1720,7 @@ def main():
     app.add_handler(CommandHandler("yt",              cmd_yt))
     app.add_handler(CommandHandler("vs",              cmd_vs))
     app.add_handler(CommandHandler("bk",              cmd_bk))
+    app.add_handler(CommandHandler("slot",            cmd_slot))
     app.add_handler(CommandHandler("condom",          cmd_condom))
     app.add_handler(CommandHandler("thief",           cmd_thief))
     app.add_handler(CommandHandler("hirsiz",          cmd_thief))
@@ -1528,4 +1744,4 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main()
+    main()3
