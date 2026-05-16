@@ -87,15 +87,43 @@ def init_db():
                 title   TEXT DEFAULT ''
             );
         """)
-        # promo_used cədvəlini ayrıca yarat — köhnə strukturla konflikt olmasın
+
+        # ── promo_used migration ──
+        # Köhnə (kod, user_id) PRIMARY KEY → yeni (kod, user_id, chat_id)
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS promo_used (
-                kod     TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                chat_id TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY (kod, user_id, chat_id)
-            );
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'promo_used'
+                ) THEN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'promo_used' AND column_name = 'chat_id'
+                    ) THEN
+                        CREATE TABLE promo_used_new (
+                            kod     TEXT NOT NULL,
+                            user_id TEXT NOT NULL,
+                            chat_id TEXT NOT NULL DEFAULT '',
+                            PRIMARY KEY (kod, user_id, chat_id)
+                        );
+                        INSERT INTO promo_used_new (kod, user_id, chat_id)
+                        SELECT kod, user_id, '' FROM promo_used
+                        ON CONFLICT DO NOTHING;
+                        DROP TABLE promo_used;
+                        ALTER TABLE promo_used_new RENAME TO promo_used;
+                    END IF;
+                ELSE
+                    CREATE TABLE promo_used (
+                        kod     TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        chat_id TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY (kod, user_id, chat_id)
+                    );
+                END IF;
+            END $$;
         """)
+
         conn.commit()
         cur.close()
     finally:
@@ -151,7 +179,7 @@ def is_registered(u: dict) -> bool:
 def ensure_group(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type == "private":
-            await update.message.reply_text("🚫 Bu komut sadece gruplarda çalışır!")
+            await update.message.reply_text("🚫 Bu komet sadece gruplarda çalışır!")
             return
         return await func(update, ctx)
     return wrapper
@@ -233,9 +261,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
-        "╔══════ 🍆 PENİSCAN BOT 🍆 ══════╗\n"
-        "        🔥 KOMUT REHBERİ 🔥\n"
-        "╚══════════════════════════╝\n\n"
+        "╔══════ 🍆 PENİSEREN BOT 🍆 ══════╗\n"
+        "           🔥 KOMUT REHBERİ 🔥\n"
+        "╚══════════════════════════════╝\n\n"
         "🏛️ GENEL KOMUTLAR\n"
         "📏 `/boyum` — Kendi penis boyunu gösterir.\n"
         "👀 `/boyu` — Yanıtladığın veya etiketlediğin kişinin boyunu gösterir.\n"
@@ -543,8 +571,8 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def vs_timeout(ctx: ContextTypes.DEFAULT_TYPE):
     data = ctx.job.data
     cid, mid, target_name = data["cid"], data["mid"], data["target_name"]
-    key = f"{cid}_{mid}"
-    vs  = ctx.bot_data.get("pending_vs", {})
+    key  = f"{cid}_{mid}"
+    vs   = ctx.bot_data.get("pending_vs", {})
     if key in vs and not vs[key].get("done"):
         vs[key]["done"] = True
         try:
@@ -783,8 +811,8 @@ async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if bahis > u["boy"]:
                     await query.edit_message_text("❗ Oyun sırasında boyun değişti, bahis iptal!")
                     return
-                sans    = 0.483 if condom_active else 0.333
-                kazandi = random.random() < sans
+                sans     = 0.483 if condom_active else 0.333
+                kazandi  = random.random() < sans
                 kart_pos = secim if kazandi else random.choice([x for x in [1, 2, 3] if x != secim])
                 def bardak_str(pos):
                     return "| " + " | ".join("🃏" if i == pos else "🥤" for i in [1, 2, 3]) + " |"
@@ -872,11 +900,10 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     alay     = random.choice(SLOT_JACKPOT_MESAJLAR)
                     show_condom = True
                 elif sonuc == "x2":
-                    sembol   = random.choice(SLOT_SEMBOLLER)
-                    diger    = [s for s in SLOT_SEMBOLLER if s != sembol]
-                    pos      = random.randint(0, 2)
-                    reels    = [sembol, sembol, sembol]
-                    reels[pos] = random.choice(diger)
+                    sembol = random.choice(SLOT_SEMBOLLER)
+                    diger  = [s for s in SLOT_SEMBOLLER if s != sembol]
+                    reels  = [sembol, sembol, sembol]
+                    reels[random.randint(0, 2)] = random.choice(diger)
                     kazanc   = bahis
                     u["boy"] += kazanc
                     durum    = "GÜZEL! 😎 (x2)"
@@ -1132,34 +1159,55 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn = get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # 1. Kod mövcuddurmu?
                 cur.execute("SELECT * FROM promos WHERE kod=%s", (kod,))
                 promo = cur.fetchone()
                 if not promo:
                     await update.message.reply_text("❌ Geçersiz kod!")
                     return
                 promo = dict(promo)
+
+                # 2. Müddəti bitibmi?
                 if now_tr() > datetime.fromisoformat(promo["expires"]):
                     await update.message.reply_text("❌ Bu kodun süresi dolmuş!")
                     return
-                cur.execute("SELECT 1 FROM promo_used WHERE kod=%s AND user_id=%s AND chat_id=%s", (kod, uid, cid))
+
+                # 3. Bu qrupda artıq istifadə edilib?
+                cur.execute(
+                    "SELECT 1 FROM promo_used WHERE kod=%s AND user_id=%s AND chat_id=%s",
+                    (kod, uid, cid)
+                )
                 if cur.fetchone():
                     await update.message.reply_text("❌ Bu kodu bu grupta zaten kullandın!")
                     return
+
+                # 4. Boyu artır
                 u               = get_user_row(cur, cid, uid)
                 miktar          = promo["miktar"]
-                eski            = u["boy"]
-                u["boy"]       += miktar
+                eski            = int(u["boy"])
+                u["boy"]        = eski + miktar
                 u["registered"] = 1
                 save_user(cur, u)
-                cur.execute("INSERT INTO promo_used (kod, user_id, chat_id) VALUES (%s,%s,%s)", (kod, uid, cid))
+
+                # 5. İstifadəni qeyd et
+                cur.execute(
+                    "INSERT INTO promo_used (kod, user_id, chat_id) VALUES (%s,%s,%s)",
+                    (kod, uid, cid)
+                )
             conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Promo xətası: {e}")
+            await update.message.reply_text("❌ Bir hata oldu, yeniden kullan.")
+            return
         finally:
             conn.close()
+
     await update.message.reply_text(
         f"🎉 *PROMO AKTİF!*\n\n"
         f"📏 Eklenen: *+{miktar} cm*\n"
         f"📊 Eski: *{eski} cm*\n"
-        f"🔥 Yeni: *{u['boy']} cm*",
+        f"🔥 Yeni: *{eski + miktar} cm*",
         parse_mode="Markdown"
     )
 
@@ -1440,9 +1488,11 @@ async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = str(update.effective_user.id)
     name  = get_name(update.effective_user)
     title = update.effective_chat.title or ""
-    now_ts = now_tr().timestamp()
-    if now_ts - ctx.bot_data.get("last_name_save", 0) > 60:
-        ctx.bot_data["last_name_save"] = now_ts
+    # Hər istifadəçi+chat üçün ayrıca key — bir chatın digərini bloklamasın
+    cache_key = f"last_name_save_{cid}_{uid}"
+    now_ts    = now_tr().timestamp()
+    if now_ts - ctx.bot_data.get(cache_key, 0) > 60:
+        ctx.bot_data[cache_key] = now_ts
         async with _db_lock:
             conn = get_conn()
             try:
