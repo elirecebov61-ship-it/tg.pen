@@ -4,6 +4,7 @@ import os
 import string
 import asyncio
 import time
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import psycopg2
@@ -42,6 +43,8 @@ def init_db():
     conn = get_conn()
     try:
         cur = conn.cursor()
+
+        # Ana cədvəllər
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 chat_id               TEXT NOT NULL,
@@ -76,7 +79,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS promos (
                 kod     TEXT PRIMARY KEY,
-                miktar  INTEGER NOT NULL,
+                miktar  NUMERIC NOT NULL,
                 expires TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS prohere_users (
@@ -88,8 +91,31 @@ def init_db():
             );
         """)
 
-        # ── promo_used migration ──
-        # Köhnə (kod, user_id) PRIMARY KEY → yeni (kod, user_id, chat_id)
+        # Migration: mövcud INTEGER sütunları NUMERIC-ə çevir
+        cur.execute("""
+            DO $$
+            BEGIN
+                -- users.boy INTEGER → NUMERIC
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='users' AND column_name='boy'
+                    AND data_type IN ('integer','bigint','smallint')
+                ) THEN
+                    ALTER TABLE users ALTER COLUMN boy TYPE NUMERIC USING boy::NUMERIC;
+                END IF;
+
+                -- promos.miktar INTEGER → NUMERIC
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='promos' AND column_name='miktar'
+                    AND data_type IN ('integer','bigint','smallint')
+                ) THEN
+                    ALTER TABLE promos ALTER COLUMN miktar TYPE NUMERIC USING miktar::NUMERIC;
+                END IF;
+            END $$;
+        """)
+
+        # promo_used migration: köhnə (kod, user_id) → yeni (kod, user_id, chat_id)
         cur.execute("""
             DO $$
             BEGIN
@@ -137,7 +163,13 @@ def get_user_row(cur, chat_id, user_id):
         cur.execute("INSERT INTO users (chat_id, user_id) VALUES (%s,%s)", (cid, uid))
         cur.execute("SELECT * FROM users WHERE chat_id=%s AND user_id=%s", (cid, uid))
         row = cur.fetchone()
-    return dict(row)
+    d = dict(row)
+    # boy həmişə Decimal olsun
+    if d.get("boy") is not None:
+        d["boy"] = Decimal(str(d["boy"]))
+    else:
+        d["boy"] = Decimal("0")
+    return d
 
 def save_user(cur, u: dict):
     cur.execute("""
@@ -151,7 +183,7 @@ def save_user(cur, u: dict):
             yolla_total=%s
         WHERE chat_id=%s AND user_id=%s
     """, (
-        u.get("name"), u.get("boy"), u.get("registered"),
+        u.get("name"), str(u.get("boy", 0)), u.get("registered"),
         u.get("uzat_hak"), u.get("uzat_reset"),
         u.get("condom_active_until"),
         u.get("condom_cooldown_until"),
@@ -175,6 +207,14 @@ def get_name(user) -> str:
 
 def is_registered(u: dict) -> bool:
     return bool(u.get("registered"))
+
+def fmt_boy(val) -> str:
+    """Böyük rəqəmləri gözəl formatla"""
+    d = Decimal(str(val))
+    # Onluq hissə yoxdursa tam göstər
+    if d == d.to_integral_value():
+        return str(int(d))
+    return str(d)
 
 def ensure_group(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -312,7 +352,7 @@ async def cmd_boyum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_registered(u):
         await update.message.reply_text("❗ Daha kaydın yok, önce `/uzat` kullan!", parse_mode="Markdown")
         return
-    await update.message.reply_text(f"🍆 Şu anki boyun: *{u['boy']} cm* 🔥", parse_mode="Markdown")
+    await update.message.reply_text(f"🍆 Şu anki boyun: *{fmt_boy(u['boy'])} cm* 🔥", parse_mode="Markdown")
 
 @ensure_group
 async def cmd_boyu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -331,7 +371,7 @@ async def cmd_boyu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_registered(u):
         await msg.reply_text("❗ Bu kullanıcı kayıtlı değil.")
         return
-    await msg.reply_text(f"🍆 *{get_name(target)}* boyu: *{u['boy']} cm* 🔥", parse_mode="Markdown")
+    await msg.reply_text(f"🍆 *{get_name(target)}* boyu: *{fmt_boy(u['boy'])} cm* 🔥", parse_mode="Markdown")
 
 @ensure_group
 async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -359,7 +399,7 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )
                     return
                 ekle            = random.randint(2, 10)
-                u["boy"]       += ekle
+                u["boy"]       += Decimal(ekle)
                 u["registered"] = 1
                 u["uzat_hak"]  -= 1
                 u["name"]       = name
@@ -374,7 +414,7 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🔥 *HELAL OLSUN {name}!*\n"
         f"🍆 Tam *{ekle} cm* uzattın!\n"
-        f"📏 Yeni boyun: *{boy} cm*\n"
+        f"📏 Yeni boyun: *{fmt_boy(boy)} cm*\n"
         f"{suffix}",
         parse_mode="Markdown"
     )
@@ -394,7 +434,7 @@ async def cmd_siralama(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines  = ["🏆 *Grup Penis Boyu Sıralaması:* 📊\n"]
     for i, row in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
-        lines.append(f"{medal} {row['name'] or 'Bilinmeyen'} — {row['boy']} cm")
+        lines.append(f"{medal} {row['name'] or 'Bilinmeyen'} — {fmt_boy(row['boy'])} cm")
     lines.append("\nKimin borusu ne kadar öttü bakalım 😎🍆")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -417,26 +457,27 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Daha kaydın yok, önce `/uzat` kullan!", parse_mode="Markdown")
         return
     arg = ctx.args[0].lower()
-    bahis = u["boy"] if arg == "all" else None
-    if bahis is None:
+    if arg == "all":
+        bahis = u["boy"]
+    else:
         try:
-            bahis = int(arg)
-        except ValueError:
+            bahis = Decimal(arg)
+        except InvalidOperation:
             await update.message.reply_text("❗ Kullanım: `/yt <miktar>` veya `/yt all`", parse_mode="Markdown")
             return
     if bahis <= 0 or bahis > u["boy"]:
-        await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown")
+        await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
     keyboard = [[
         InlineKeyboardButton("🟡 YAZI", callback_data=f"yt|yazi|{uid}|{bahis}"),
         InlineKeyboardButton("🦅 TURA", callback_data=f"yt|tura|{uid}|{bahis}")
     ]]
     sent = await update.message.reply_text(
-        f"🪙 *YAZI TURA BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{bahis} cm*\n⏳ 20 saniye içinde seç!",
+        f"🪙 *YAZI TURA BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n⏳ 20 saniye içinde seç!",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
     key = f"{cid}_{sent.message_id}"
-    ctx.bot_data.setdefault("pending_bets", {})[key] = {"uid": uid, "cid": cid, "bahis": bahis, "name": name, "done": False}
+    ctx.bot_data.setdefault("pending_bets", {})[key] = {"uid": uid, "cid": cid, "bahis": str(bahis), "name": name, "done": False}
     ctx.job_queue.run_once(bet_timeout, 20, data={"cid": cid, "mid": sent.message_id, "name": name}, chat_id=int(cid), name=f"bet_{key}")
 
 async def bet_timeout(ctx: ContextTypes.DEFAULT_TYPE):
@@ -460,7 +501,7 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts      = query.data.split("|")
     secim_raw  = parts[1]
     bet_uid    = parts[2]
-    bahis      = int(parts[3])
+    bahis      = Decimal(parts[3])
     cid        = str(query.message.chat_id)
     mid        = query.message.message_id
     caller_uid = str(query.from_user.id)
@@ -495,12 +536,12 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     kazanc   = bahis * 2
                     u["boy"] += kazanc
                     condom_str = f"\n🛡️ Condom etkisi: şans *%{int(sans*100)}*" if condom_active else ""
-                    msg = f"🎉 *KAZANDIN!*\n🎲 Gelen: *{secim}*\n🎁 Kazanç: *+{kazanc} cm*\n📏 Yeni Boy: *{u['boy']} cm*{condom_str}"
+                    msg = f"🎉 *KAZANDIN!*\n🎲 Gelen: *{secim}*\n🎁 Kazanç: *+{fmt_boy(kazanc)} cm*\n📏 Yeni Boy: *{fmt_boy(u['boy'])} cm*{condom_str}"
                 else:
                     gelen    = "TURA" if secim == "YAZI" else "YAZI"
-                    u["boy"] = max(0, u["boy"] - bahis)
+                    u["boy"] = max(Decimal("0"), u["boy"] - bahis)
                     alay     = random.choice(KAYBETTI_MESAJLAR)
-                    msg = f"{alay}\n\n❌ *KAYBETTİN!*\n✅ Seçimin: *{secim}*\n🎲 Gelen: *{gelen}*\n📉 Giden: *-{bahis} cm*\n📏 Yeni Boy: *{u['boy']} cm* 🥀"
+                    msg = f"{alay}\n\n❌ *KAYBETTİN!*\n✅ Seçimin: *{secim}*\n🎲 Gelen: *{gelen}*\n📉 Giden: *-{fmt_boy(bahis)} cm*\n📏 Yeni Boy: *{fmt_boy(u['boy'])} cm* 🥀"
                 save_user(cur, u)
             conn.commit()
         finally:
@@ -535,11 +576,12 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         finally:
             conn.close()
     arg = ctx.args[0].lower()
-    bahis = u["boy"] if arg == "all" else None
-    if bahis is None:
+    if arg == "all":
+        bahis = u["boy"]
+    else:
         try:
-            bahis = int(arg)
-        except ValueError:
+            bahis = Decimal(arg)
+        except InvalidOperation:
             await msg.reply_text("❗ Kullanım: `/vs <miktar>` veya `/vs @kullanici <miktar>`", parse_mode="Markdown")
             return
     if not is_registered(u):
@@ -549,10 +591,10 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("❗ Rakip kayıtlı değil.")
         return
     if bahis <= 0 or bahis > u["boy"]:
-        await msg.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown")
+        await msg.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
     if bahis > t["boy"]:
-        await msg.reply_text(f"❗ Rakibin yeterli boyu yok! Mevcut: *{t['boy']} cm*", parse_mode="Markdown")
+        await msg.reply_text(f"❗ Rakibin yeterli boyu yok! Mevcut: *{fmt_boy(t['boy'])} cm*", parse_mode="Markdown")
         return
     challenger_name = get_name(update.effective_user)
     target_name     = get_name(target_user)
@@ -561,11 +603,11 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🙅 KAÇ",   callback_data=f"vs|kac|{uid}|{tid}|{bahis}")
     ]]
     sent = await msg.reply_text(
-        f"⚔️ *VS BAŞLADI!*\n\n🗡️ Meydan okuyan: *{challenger_name}*\n🛡️ Rakip: *{target_name}*\n🍆 Bahis: *{bahis} cm*\n\n⏳ 20 saniye içinde cevap ver!",
+        f"⚔️ *VS BAŞLADI!*\n\n🗡️ Meydan okuyan: *{challenger_name}*\n🛡️ Rakip: *{target_name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n\n⏳ 20 saniye içinde cevap ver!",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
     key = f"{cid}_{sent.message_id}"
-    ctx.bot_data.setdefault("pending_vs", {})[key] = {"uid": uid, "tid": tid, "cid": cid, "bahis": bahis, "challenger_name": challenger_name, "target_name": target_name, "done": False}
+    ctx.bot_data.setdefault("pending_vs", {})[key] = {"uid": uid, "tid": tid, "cid": cid, "bahis": str(bahis), "challenger_name": challenger_name, "target_name": target_name, "done": False}
     ctx.job_queue.run_once(vs_timeout, 20, data={"cid": cid, "mid": sent.message_id, "target_name": target_name}, chat_id=int(cid), name=f"vs_{key}")
 
 async def vs_timeout(ctx: ContextTypes.DEFAULT_TYPE):
@@ -590,7 +632,7 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     action         = parts[1]
     challenger_uid = parts[2]
     target_uid     = parts[3]
-    bahis          = int(parts[4])
+    bahis          = Decimal(parts[4])
     cid            = str(query.message.chat_id)
     mid            = query.message.message_id
     caller_uid     = str(query.from_user.id)
@@ -637,11 +679,11 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if random.random() < u_chance:
                     winner_name, loser_name = challenger_name, target_name
                     u["boy"] += bahis
-                    t["boy"]  = max(0, t["boy"] - bahis)
+                    t["boy"]  = max(Decimal("0"), t["boy"] - bahis)
                 else:
                     winner_name, loser_name = target_name, challenger_name
                     t["boy"] += bahis
-                    u["boy"]  = max(0, u["boy"] - bahis)
+                    u["boy"]  = max(Decimal("0"), u["boy"] - bahis)
                 u_boy, t_boy = u["boy"], t["boy"]
                 save_user(cur, u)
                 save_user(cur, t)
@@ -653,7 +695,7 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         condom_line = f"\n🛡️ Condom etkisi: meydan okuyan şansı *%{int(u_chance*100)}* — rakip şansı *%{int(t_chance*100)}*"
     await ctx.bot.send_message(
         chat_id=int(cid),
-        text=f"💦 *VS SONUCU!*\n\n👑 Kazanan: *{winner_name}* (+{bahis} cm)\n🤕 Kaybeden: *{loser_name}* (-{bahis} cm)\n\n📏 {challenger_name}: *{u_boy} cm*\n🤏 {target_name}: *{t_boy} cm*{condom_line}",
+        text=f"💦 *VS SONUCU!*\n\n👑 Kazanan: *{winner_name}* (+{fmt_boy(bahis)} cm)\n🤕 Kaybeden: *{loser_name}* (-{fmt_boy(bahis)} cm)\n\n📏 {challenger_name}: *{fmt_boy(u_boy)} cm*\n🤏 {target_name}: *{fmt_boy(t_boy)} cm*{condom_line}",
         parse_mode="Markdown"
     )
 
@@ -739,15 +781,16 @@ async def cmd_bk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Daha kaydın yok, önce `/uzat` kullan!", parse_mode="Markdown")
         return
     arg = ctx.args[0].lower()
-    bahis = u["boy"] if arg == "all" else None
-    if bahis is None:
+    if arg == "all":
+        bahis = u["boy"]
+    else:
         try:
-            bahis = int(arg)
-        except ValueError:
+            bahis = Decimal(arg)
+        except InvalidOperation:
             await update.message.reply_text("❗ Kullanım: `/bk <miktar>` veya `/bk all`", parse_mode="Markdown")
             return
     if bahis <= 0 or bahis > u["boy"]:
-        await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown")
+        await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
     keyboard = [[
         InlineKeyboardButton("1🥤", callback_data=f"bk|1|{uid}|{bahis}"),
@@ -755,11 +798,11 @@ async def cmd_bk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("3🥤", callback_data=f"bk|3|{uid}|{bahis}"),
     ]]
     sent = await update.message.reply_text(
-        f"🃏 *BUL KARAYI BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{bahis} cm*\n⏳ 20 saniye içinde seç!",
+        f"🃏 *BUL KARAYI BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n⏳ 20 saniye içinde seç!",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
     key = f"{cid}_{sent.message_id}"
-    ctx.bot_data.setdefault("pending_bk", {})[key] = {"uid": uid, "cid": cid, "bahis": bahis, "name": name, "done": False}
+    ctx.bot_data.setdefault("pending_bk", {})[key] = {"uid": uid, "cid": cid, "bahis": str(bahis), "name": name, "done": False}
     ctx.job_queue.run_once(bk_timeout, 20, data={"cid": cid, "mid": sent.message_id, "name": name}, chat_id=int(cid), name=f"bk_{key}")
 
 async def bk_timeout(ctx: ContextTypes.DEFAULT_TYPE):
@@ -783,7 +826,7 @@ async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts      = query.data.split("|")
     secim      = int(parts[1])
     bet_uid    = parts[2]
-    bahis      = int(parts[3])
+    bahis      = Decimal(parts[3])
     cid        = str(query.message.chat_id)
     mid        = query.message.message_id
     caller_uid = str(query.from_user.id)
@@ -822,11 +865,11 @@ async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     u["boy"] += kazanc
                     alay      = random.choice(BK_KAZANDI_MESAJLAR)
                     condom_str = f"\n🛡️ Condom etkisi: şans *%{int(sans*100)}*" if condom_active else ""
-                    msg = f"🎉 *TEBRİKLER!*\n{gosterim}\n\n🎁 Kazanç: *+{kazanc} cm*\n📏 Yeni Boy: *{u['boy']} cm*\n\n💬 {alay}{condom_str}"
+                    msg = f"🎉 *TEBRİKLER!*\n{gosterim}\n\n🎁 Kazanç: *+{fmt_boy(kazanc)} cm*\n📏 Yeni Boy: *{fmt_boy(u['boy'])} cm*\n\n💬 {alay}{condom_str}"
                 else:
-                    u["boy"] = max(0, u["boy"] - bahis)
+                    u["boy"] = max(Decimal("0"), u["boy"] - bahis)
                     alay     = random.choice(BK_KAYBETTI_MESAJLAR)
-                    msg = f"❌ *YANLIŞ BARDAK!*\n{gosterim}\n\n📉 Giden: *-{bahis} cm*\n📏 Yeni Boy: *{u['boy']} cm*\n\n💬 {alay}"
+                    msg = f"❌ *YANLIŞ BARDAK!*\n{gosterim}\n\n📉 Giden: *-{fmt_boy(bahis)} cm*\n📏 Yeni Boy: *{fmt_boy(u['boy'])} cm*\n\n💬 {alay}"
                 save_user(cur, u)
             conn.commit()
         finally:
@@ -852,22 +895,23 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Daha kaydın yok, önce `/uzat` kullan!", parse_mode="Markdown")
         return
     arg = ctx.args[0].lower()
-    bahis = int(u["boy"]) if arg == "all" else None
-    if bahis is None:
+    if arg == "all":
+        bahis = u["boy"]
+    else:
         try:
-            bahis = int(arg)
-        except ValueError:
+            bahis = Decimal(arg)
+        except InvalidOperation:
             await update.message.reply_text("❗ Kullanım: `/slot <miktar>` veya `/slot all`", parse_mode="Markdown")
             return
     if bahis <= 0 or bahis > u["boy"]:
-        await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{u['boy']} cm*", parse_mode="Markdown")
+        await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
-    sent = await update.message.reply_text(f"🎰 *SLOT BAŞLIYOR...*\n👤 {name}\n💰 Bahis: *{bahis} cm*", parse_mode="Markdown")
+    sent = await update.message.reply_text(f"🎰 *SLOT BAŞLIYOR...*\n👤 {name}\n💰 Bahis: *{fmt_boy(bahis)} cm*", parse_mode="Markdown")
     for i in range(6):
         frame = random_spin()
         try:
             await sent.edit_text(
-                f"🎰 *SLOT ÇEVİRİLİYOR...*\n\n| {frame[0]} | {frame[1]} | {frame[2]} |\n\n👤 {name}\n💰 Bahis: *{bahis} cm*",
+                f"🎰 *SLOT ÇEVİRİLİYOR...*\n\n| {frame[0]} | {frame[1]} | {frame[2]} |\n\n👤 {name}\n💰 Bahis: *{fmt_boy(bahis)} cm*",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -896,7 +940,7 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     kazanc   = bahis * 3
                     u["boy"] += kazanc
                     durum    = "JACKPOT! 🤑 (x4)"
-                    degisim  = f"+{kazanc}"
+                    degisim  = f"+{fmt_boy(kazanc)}"
                     alay     = random.choice(SLOT_JACKPOT_MESAJLAR)
                     show_condom = True
                 elif sonuc == "x2":
@@ -907,14 +951,14 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     kazanc   = bahis
                     u["boy"] += kazanc
                     durum    = "GÜZEL! 😎 (x2)"
-                    degisim  = f"+{kazanc}"
+                    degisim  = f"+{fmt_boy(kazanc)}"
                     alay     = random.choice(SLOT_X2_MESAJLAR)
                     show_condom = True
                 else:
                     reels    = random.sample(SLOT_SEMBOLLER, 3)
-                    u["boy"] = max(0, int(u["boy"]) - bahis)
+                    u["boy"] = max(Decimal("0"), u["boy"] - bahis)
                     durum    = "KAYBETTİN! 🤡"
-                    degisim  = f"-{bahis}"
+                    degisim  = f"-{fmt_boy(bahis)}"
                     alay     = random.choice(SLOT_KAYBETTI_MESAJLAR)
                     show_condom = False
                 yeni_boy = u["boy"]
@@ -928,7 +972,7 @@ async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"👉 | {reels[0]} | {reels[1]} | {reels[2]} | 👈\n\n"
         f"🔔 Durum: *{durum}*\n"
         f"📉 Değişim: *{degisim} cm*\n"
-        f"📏 Yeni Boy: *{yeni_boy} cm*"
+        f"📏 Yeni Boy: *{fmt_boy(yeni_boy)} cm*"
         f"{condom_line}\n\n"
         f"💬 {alay}"
     )
@@ -985,10 +1029,10 @@ async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 my_name      = get_name(update.effective_user)
                 target_name  = get_name(target_user)
                 if kazandi:
-                    calinan        = max(1, round(t["boy"] * oran / 100))
+                    calinan        = max(Decimal("1"), (t["boy"] * oran / 100).to_integral_value())
                     eski_u, eski_t = u["boy"], t["boy"]
                     u["boy"]      += calinan
-                    t["boy"]       = max(0, t["boy"] - calinan)
+                    t["boy"]       = max(Decimal("0"), t["boy"] - calinan)
                     save_user(cur, u)
                     save_user(cur, t)
                     reply = (
@@ -996,24 +1040,24 @@ async def cmd_thief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         f"😈 *{my_name}*, {target_name} kişisinin boyundan çaldı!\n"
                         f"🎯 Çalınan oran: *%{oran}*\n"
                         f"🎲 Başarı şansı: *%{basari_sansi}*\n"
-                        f"🍆 Çalınan: *+{calinan} cm*\n\n"
-                        f"📏 {my_name}: *{eski_u}* → *{u['boy']} cm*\n"
-                        f"🤏 {target_name}: *{eski_t}* → *{t['boy']} cm*\n\n"
+                        f"🍆 Çalınan: *+{fmt_boy(calinan)} cm*\n\n"
+                        f"📏 {my_name}: *{fmt_boy(eski_u)}* → *{fmt_boy(u['boy'])} cm*\n"
+                        f"🤏 {target_name}: *{fmt_boy(eski_t)}* → *{fmt_boy(t['boy'])} cm*\n\n"
                         f"🔁 Kalan deneme: *{kalan}*"
                     )
                 else:
-                    ceza     = max(1, round(u["boy"] * 1 / 100))
+                    ceza     = max(Decimal("1"), (u["boy"] * 1 / 100).to_integral_value())
                     eski_u   = u["boy"]
-                    u["boy"] = max(0, u["boy"] - ceza)
+                    u["boy"] = max(Decimal("0"), u["boy"] - ceza)
                     save_user(cur, u)
                     reply = (
                         f"🚨 *YAKALANDIN!*\n\n"
                         f"👮 *{my_name}*, {target_name} kişisinden çalmaya çalışırken enselendi!\n"
                         f"🎯 Denenen oran: *%{oran}*\n"
                         f"🎲 Başarı şansı: *%{basari_sansi}*\n"
-                        f"📉 Ceza: *-{ceza} cm*\n\n"
-                        f"📏 {my_name}: *{eski_u}* → *{u['boy']} cm*\n"
-                        f"🛡️ {target_name}: *{t['boy']} cm* ile sağlam kaldı.\n\n"
+                        f"📉 Ceza: *-{fmt_boy(ceza)} cm*\n\n"
+                        f"📏 {my_name}: *{fmt_boy(eski_u)}* → *{fmt_boy(u['boy'])} cm*\n"
+                        f"🛡️ {target_name}: *{fmt_boy(t['boy'])} cm* ile sağlam kaldı.\n\n"
                         f"🔁 Kalan deneme: *{kalan}*"
                     )
             conn.commit()
@@ -1031,8 +1075,8 @@ async def cmd_yolla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("❗ Kullanım: Birinin mesajına yanıt verip `/yolla <miktar>` yaz.\nÖrnek: `/yolla 1000`", parse_mode="Markdown")
         return
     try:
-        miktar = int(ctx.args[0])
-    except ValueError:
+        miktar = Decimal(ctx.args[0])
+    except InvalidOperation:
         await msg.reply_text("❗ Geçerli bir miktar gir.")
         return
     if miktar <= 0:
@@ -1072,7 +1116,7 @@ async def cmd_yolla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text(f"🚫 Bugün *{get_name(target_user)}* kişisine zaten 3 kez yolladın.", parse_mode="Markdown")
                     return
                 if miktar > u["boy"]:
-                    await msg.reply_text(f"❗ Yeterli boyun yok! Mevcut: *{u['boy']} cm*", parse_mode="Markdown")
+                    await msg.reply_text(f"❗ Yeterli boyun yok! Mevcut: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
                     return
                 eski_u, eski_t    = u["boy"], t["boy"]
                 u["boy"]         -= miktar
@@ -1098,9 +1142,9 @@ async def cmd_yolla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🎁 *PENİS BOYU TRANSFERİ BAŞARILI!*\n\n"
         f"📤 Gönderen: *{my_name}*\n"
         f"📥 Alan: *{target_name}*\n"
-        f"🍆 Yollanan: *{miktar} cm*\n\n"
-        f"📉 {my_name}: *{eski_u}* → *{u_boy} cm*\n"
-        f"📈 {target_name}: *{eski_t}* → *{t_boy} cm*\n\n"
+        f"🍆 Yollanan: *{fmt_boy(miktar)} cm*\n\n"
+        f"📉 {my_name}: *{fmt_boy(eski_u)}* → *{fmt_boy(u_boy)} cm*\n"
+        f"📈 {target_name}: *{fmt_boy(eski_t)}* → *{fmt_boy(t_boy)} cm*\n\n"
         f"🔁 Bugünkü toplam yollama hakkın: *{toplam_kalan}*\n"
         f"👤 Bu kişiye kalan yollama hakkın: *{kisi_kalan}*",
         parse_mode="Markdown"
@@ -1159,20 +1203,15 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn = get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # 1. Kod mövcuddurmu?
                 cur.execute("SELECT * FROM promos WHERE kod=%s", (kod,))
                 promo = cur.fetchone()
                 if not promo:
                     await update.message.reply_text("❌ Geçersiz kod!")
                     return
                 promo = dict(promo)
-
-                # 2. Müddəti bitibmi?
                 if now_tr() > datetime.fromisoformat(promo["expires"]):
                     await update.message.reply_text("❌ Bu kodun süresi dolmuş!")
                     return
-
-                # 3. Bu qrupda artıq istifadə edilib?
                 cur.execute(
                     "SELECT 1 FROM promo_used WHERE kod=%s AND user_id=%s AND chat_id=%s",
                     (kod, uid, cid)
@@ -1180,16 +1219,12 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if cur.fetchone():
                     await update.message.reply_text("❌ Bu kodu bu grupta zaten kullandın!")
                     return
-
-                # 4. Boyu artır
                 u               = get_user_row(cur, cid, uid)
-                miktar          = promo["miktar"]
-                eski            = int(u["boy"])
+                miktar          = Decimal(str(promo["miktar"]))
+                eski            = u["boy"]
                 u["boy"]        = eski + miktar
                 u["registered"] = 1
                 save_user(cur, u)
-
-                # 5. İstifadəni qeyd et
                 cur.execute(
                     "INSERT INTO promo_used (kod, user_id, chat_id) VALUES (%s,%s,%s)",
                     (kod, uid, cid)
@@ -1198,16 +1233,15 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             conn.rollback()
             logger.error(f"Promo xətası: {e}")
-            await update.message.reply_text("❌ Bir hata oldu, yeniden kullan.")
+            await update.message.reply_text("❌ Bir xəta baş verdi, yenidən cəhd et.")
             return
         finally:
             conn.close()
-
     await update.message.reply_text(
         f"🎉 *PROMO AKTİF!*\n\n"
-        f"📏 Eklenen: *+{miktar} cm*\n"
-        f"📊 Eski: *{eski} cm*\n"
-        f"🔥 Yeni: *{eski + miktar} cm*",
+        f"📏 Eklenen: *+{fmt_boy(miktar)} cm*\n"
+        f"📊 Eski: *{fmt_boy(eski)} cm*\n"
+        f"🔥 Yeni: *{fmt_boy(eski + miktar)} cm*",
         parse_mode="Markdown"
     )
 
@@ -1220,10 +1254,10 @@ async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         kod    = ctx.args[0].upper()
-        miktar = int(ctx.args[1])
+        miktar = Decimal(ctx.args[1])
         gun    = int(ctx.args[2])
-    except ValueError:
-        await update.message.reply_text("❗ Miktar ve gün sayı olmalı!")
+    except (InvalidOperation, ValueError):
+        await update.message.reply_text("❗ Miktar ve gün düzgün dəyər olmalı!")
         return
     expires = (now_tr() + timedelta(days=gun)).isoformat()
     async with _db_lock:
@@ -1232,13 +1266,13 @@ async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO promos (kod, miktar, expires) VALUES (%s,%s,%s) ON CONFLICT(kod) DO UPDATE SET miktar=EXCLUDED.miktar, expires=EXCLUDED.expires",
-                    (kod, miktar, expires)
+                    (kod, str(miktar), expires)
                 )
             conn.commit()
         finally:
             conn.close()
     await update.message.reply_text(
-        f"✅ *PROMOKOD OLUŞTURULDU!*\n\n🎟️ KOD: `{kod}`\n💰 MİKTAR: *{miktar} cm*\n📅 SÜRE: *{gun} gün*",
+        f"✅ *PROMOKOD OLUŞTURULDU!*\n\n🎟️ KOD: `{kod}`\n💰 MİKTAR: *{fmt_boy(miktar)} cm*\n📅 SÜRE: *{gun} gün*",
         parse_mode="Markdown"
     )
 
@@ -1250,10 +1284,10 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Kullanım: `/promokodolustur <miktar> <gün>`", parse_mode="Markdown")
         return
     try:
-        miktar = int(ctx.args[0])
+        miktar = Decimal(ctx.args[0])
         gun    = int(ctx.args[1])
-    except ValueError:
-        await update.message.reply_text("❗ Miktar ve gün sayı olmalı!")
+    except (InvalidOperation, ValueError):
+        await update.message.reply_text("❗ Miktar ve gün düzgün dəyər olmalı!")
         return
     kod     = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
     expires = (now_tr() + timedelta(days=gun)).isoformat()
@@ -1263,13 +1297,13 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO promos (kod, miktar, expires) VALUES (%s,%s,%s) ON CONFLICT(kod) DO UPDATE SET miktar=EXCLUDED.miktar, expires=EXCLUDED.expires",
-                    (kod, miktar, expires)
+                    (kod, str(miktar), expires)
                 )
             conn.commit()
         finally:
             conn.close()
     await update.message.reply_text(
-        f"✅ *RASTGELE PROMOKOD OLUŞTURULDU!*\n\n🎟️ KOD: `{kod}`\n💰 MİKTAR: *{miktar} cm*\n📅 SÜRE: *{gun} gün*",
+        f"✅ *RASTGELE PROMOKOD OLUŞTURULDU!*\n\n🎟️ KOD: `{kod}`\n💰 MİKTAR: *{fmt_boy(miktar)} cm*\n📅 SÜRE: *{gun} gün*",
         parse_mode="Markdown"
     )
 
@@ -1287,16 +1321,16 @@ async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 promo_count = cur.fetchone()["c"]
         finally:
             conn.close()
-    total   = row["total_boy"] or 0
-    users   = row["users"]     or 0
-    grups   = row["grups"]     or 0
-    ort_boy = round(total / users) if users > 0 else 0
+    total   = Decimal(str(row["total_boy"])) if row["total_boy"] else Decimal("0")
+    users   = row["users"] or 0
+    grups   = row["grups"] or 0
+    ort_boy = (total / users).to_integral_value() if users > 0 else Decimal("0")
     await update.message.reply_text(
         f"📊 *BOT İSTATİSTİKLERİ*\n\n"
         f"👥 Toplam grup: *{grups}*\n"
         f"👤 Toplam kayıtlı kullanıcı: *{users}*\n"
-        f"🍆 Toplam boy: *{total} cm*\n"
-        f"📏 Ortalama boy: *{ort_boy} cm*\n"
+        f"🍆 Toplam boy: *{fmt_boy(total)} cm*\n"
+        f"📏 Ortalama boy: *{fmt_boy(ort_boy)} cm*\n"
         f"🎟️ Promo kod sayısı: *{promo_count}*",
         parse_mode="Markdown"
     )
@@ -1320,7 +1354,7 @@ async def cmd_disistatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for cid, users in groups.items():
         lines.append(f"🏠 Grup: `{cid}` — *{len(users)} kişi*")
         for i, u in enumerate(users[:5]):
-            lines.append(f"  {i+1}. {u['name'] or 'Bilinmeyen'} — *{u['boy']} cm*")
+            lines.append(f"  {i+1}. {u['name'] or 'Bilinmeyen'} — *{fmt_boy(u['boy'])} cm*")
         lines.append("")
     if len(lines) == 1:
         lines.append("Henüz veri yok.")
@@ -1347,18 +1381,16 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await msg.reply_text("❗ Kullanım: `/degistir <miktar>`", parse_mode="Markdown")
         return
-    val       = ctx.args[0]
-    check_val = val.lstrip("-")
-    if not check_val.isdigit():
-        await msg.reply_text("❗ Geçerli bir sayı gir.")
-        return
-    if len(check_val) > 25:
-        await msg.reply_text("❗ En fazla 25 basamaklı sayı girebilirsin.")
-        return
+    val = ctx.args[0]
     try:
-        miktar = int(val)
-    except ValueError:
+        miktar = Decimal(val)
+    except InvalidOperation:
         await msg.reply_text("❗ Geçerli bir sayı gir.")
+        return
+    # 40 rəqəmli yoxlama
+    clean = val.lstrip("-").split(".")[0]
+    if len(clean) > 40:
+        await msg.reply_text("❗ En fazla 40 basamaklı sayı girebilirsin.")
         return
     target_user = msg.reply_to_message.from_user
     cid         = str(update.effective_chat.id)
@@ -1376,7 +1408,7 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         finally:
             conn.close()
-    await msg.reply_text(f"✅ *{name}* artık *{miktar} cm*!", parse_mode="Markdown")
+    await msg.reply_text(f"✅ *{name}* artık *{fmt_boy(miktar)} cm*!", parse_mode="Markdown")
 
 async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1488,7 +1520,6 @@ async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = str(update.effective_user.id)
     name  = get_name(update.effective_user)
     title = update.effective_chat.title or ""
-    # Hər istifadəçi+chat üçün ayrıca key — bir chatın digərini bloklamasın
     cache_key = f"last_name_save_{cid}_{uid}"
     now_ts    = now_tr().timestamp()
     if now_ts - ctx.bot_data.get(cache_key, 0) > 60:
