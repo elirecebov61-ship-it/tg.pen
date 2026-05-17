@@ -219,7 +219,7 @@ def fmt_boy(val) -> str:
 def ensure_group(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type == "private":
-            await update.message.reply_text("🚫 Bu komet sadece gruplarda çalışır!")
+            await update.message.reply_text("🚫 Bu komut sadece gruplarda çalışır!")
             return
         return await func(update, ctx)
     return wrapper
