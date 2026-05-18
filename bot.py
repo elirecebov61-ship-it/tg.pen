@@ -303,6 +303,15 @@ SLOT_KAYBETTI_MESAJLAR = [
 def random_spin() -> list:
     return [random.choice(SLOT_SEMBOLLER) for _ in range(3)]
 
+# ── Boy callback_data üçün qısa format (Telegram 64 bayt limiti) ──
+def bahis_to_cb(bahis: Decimal) -> str:
+    """Decimal-i callback_data üçün string-ə çevir."""
+    return str(bahis)
+
+def cb_to_bahis(s: str) -> Decimal:
+    """callback_data string-ini Decimal-ə çevir."""
+    return Decimal(s)
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🍆 KRALLIĞA HOŞ GELDİN!\n\n`/help` yazarak komutları görebilirsin.",
@@ -340,7 +349,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🎁 PROMOSYON\n"
         "📦 `/promo <kod>` — Promosyon kodunu kullanır.\n"
         "🎫 `/promokodolustur <miktar> <gün>` — Rastgele promo kod üretir. _(Admin)_\n"
-        "🎟️ `/ozelpromokod <KOD> <miktar> <gün>` — Özel promo kod üretir. _(Admin)_\n\n"
+        "🎟️ `/ozelpromokod <KOD> <miktar> <gün>` — Özel promo kod üretir. _(Admin)_\n"
+        "🗑️ `/promosil <KOD>` — Promo kodu siler. _(Admin)_\n\n"
         "💡 KISA NOTLAR\n"
         "• Reply gereken komutlar: `/boyu`, `/vs`, `/thief`, `/yolla`, `/kaldir`, `/indir`\n"
         "• Günlük sayaçlar UTC+3 saatine göre sıfırlanır.\n\n"
@@ -478,9 +488,10 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if bahis <= 0 or bahis > u["boy"]:
         await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
+    # Bahisi bot_data-da saxla, callback_data-ya yalnız key ver
     keyboard = [[
-        InlineKeyboardButton("🟡 YAZI", callback_data=f"yt|yazi|{uid}|{bahis}"),
-        InlineKeyboardButton("🦅 TURA", callback_data=f"yt|tura|{uid}|{bahis}")
+        InlineKeyboardButton("🟡 YAZI", callback_data=f"yt|yazi|{uid}|{bahis_to_cb(bahis)}"),
+        InlineKeyboardButton("🦅 TURA", callback_data=f"yt|tura|{uid}|{bahis_to_cb(bahis)}")
     ]]
     sent = await update.message.reply_text(
         f"🪙 *YAZI TURA BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n⏳ 20 saniye içinde seç!",
@@ -511,7 +522,6 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts      = query.data.split("|")
     secim_raw  = parts[1]
     bet_uid    = parts[2]
-    bahis      = Decimal(parts[3])
     cid        = str(query.message.chat_id)
     mid        = query.message.message_id
     caller_uid = str(query.from_user.id)
@@ -524,6 +534,8 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if key not in bets or bets[key].get("done"):
             await query.answer("⚠️ Bu bahis süresi doldu veya zaten oynandı.", show_alert=True)
             return
+        # Bahisi bot_data-dan al — böyük ədədlər callback_data-ya sığmaya bilər
+        bahis = Decimal(bets[key]["bahis"])
         bets[key]["done"] = True
     for job in ctx.job_queue.get_jobs_by_name(f"bet_{key}"):
         job.schedule_removal()
@@ -609,15 +621,18 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     challenger_name = get_name(update.effective_user)
     target_name     = get_name(target_user)
     keyboard = [[
-        InlineKeyboardButton("🍌 KABUL", callback_data=f"vs|kabul|{uid}|{tid}|{bahis}"),
-        InlineKeyboardButton("🙅 KAÇ",   callback_data=f"vs|kac|{uid}|{tid}|{bahis}")
+        InlineKeyboardButton("🍌 KABUL", callback_data=f"vs|kabul|{uid}|{tid}|{bahis_to_cb(bahis)}"),
+        InlineKeyboardButton("🙅 KAÇ",   callback_data=f"vs|kac|{uid}|{tid}|{bahis_to_cb(bahis)}")
     ]]
     sent = await msg.reply_text(
         f"⚔️ *VS BAŞLADI!*\n\n🗡️ Meydan okuyan: *{challenger_name}*\n🛡️ Rakip: *{target_name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n\n⏳ 20 saniye içinde cevap ver!",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
     key = f"{cid}_{sent.message_id}"
-    ctx.bot_data.setdefault("pending_vs", {})[key] = {"uid": uid, "tid": tid, "cid": cid, "bahis": str(bahis), "challenger_name": challenger_name, "target_name": target_name, "done": False}
+    ctx.bot_data.setdefault("pending_vs", {})[key] = {
+        "uid": uid, "tid": tid, "cid": cid, "bahis": str(bahis),
+        "challenger_name": challenger_name, "target_name": target_name, "done": False
+    }
     ctx.job_queue.run_once(vs_timeout, 20, data={"cid": cid, "mid": sent.message_id, "target_name": target_name}, chat_id=int(cid), name=f"vs_{key}")
 
 async def vs_timeout(ctx: ContextTypes.DEFAULT_TYPE):
@@ -642,7 +657,6 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     action         = parts[1]
     challenger_uid = parts[2]
     target_uid     = parts[3]
-    bahis          = Decimal(parts[4])
     cid            = str(query.message.chat_id)
     mid            = query.message.message_id
     caller_uid     = str(query.from_user.id)
@@ -656,6 +670,7 @@ async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer("🚫 Bu davet süresi doldu!", show_alert=True)
             return
         vs_data         = vs[key]
+        bahis           = Decimal(vs_data["bahis"])
         vs_data["done"] = True
     for job in ctx.job_queue.get_jobs_by_name(f"vs_{key}"):
         job.schedule_removal()
@@ -803,9 +818,9 @@ async def cmd_bk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
     keyboard = [[
-        InlineKeyboardButton("1🥤", callback_data=f"bk|1|{uid}|{bahis}"),
-        InlineKeyboardButton("2🥤", callback_data=f"bk|2|{uid}|{bahis}"),
-        InlineKeyboardButton("3🥤", callback_data=f"bk|3|{uid}|{bahis}"),
+        InlineKeyboardButton("1🥤", callback_data=f"bk|1|{uid}|{bahis_to_cb(bahis)}"),
+        InlineKeyboardButton("2🥤", callback_data=f"bk|2|{uid}|{bahis_to_cb(bahis)}"),
+        InlineKeyboardButton("3🥤", callback_data=f"bk|3|{uid}|{bahis_to_cb(bahis)}"),
     ]]
     sent = await update.message.reply_text(
         f"🃏 *BUL KARAYI BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n⏳ 20 saniye içinde seç!",
@@ -836,7 +851,6 @@ async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts      = query.data.split("|")
     secim      = int(parts[1])
     bet_uid    = parts[2]
-    bahis      = Decimal(parts[3])
     cid        = str(query.message.chat_id)
     mid        = query.message.message_id
     caller_uid = str(query.from_user.id)
@@ -849,6 +863,7 @@ async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if key not in bks or bks[key].get("done"):
             await query.answer("⚠️ Bu bahis süresi doldu veya zaten oynandı.", show_alert=True)
             return
+        bahis = Decimal(bks[key]["bahis"])
         bks[key]["done"] = True
     for job in ctx.job_queue.get_jobs_by_name(f"bk_{key}"):
         job.schedule_removal()
@@ -1258,7 +1273,6 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid_caller = str(update.effective_user.id)
     is_admin   = (update.effective_user.id == ADMIN_ID)
-    # Admin deyilsə prohere yoxla
     if not is_admin:
         async with _db_lock:
             conn = get_conn()
@@ -1328,6 +1342,34 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ── YENİ: /promosil ─────────────────────────────────────────────────────────
+async def cmd_promosil(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
+        return
+    if not ctx.args:
+        await update.message.reply_text("❗ Kullanım: `/promosil <KOD>`", parse_mode="Markdown")
+        return
+    kod = ctx.args[0].upper()
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM promos WHERE kod=%s", (kod,))
+                deleted = cur.rowcount
+                if deleted:
+                    cur.execute("DELETE FROM promo_used WHERE kod=%s", (kod,))
+            conn.commit()
+        finally:
+            conn.close()
+    if deleted:
+        await update.message.reply_text(
+            f"🗑️ *`{kod}`* kodu silindi!\n_(İstifadə tarixçəsi də təmizləndi)_",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(f"❌ *`{kod}`* kodu bulunamadı!", parse_mode="Markdown")
+
 async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
@@ -1340,19 +1382,34 @@ async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 row = cur.fetchone()
                 cur.execute("SELECT COUNT(*) as c FROM promos")
                 promo_count = cur.fetchone()["c"]
+                # ── Prohere siyahısı ──
+                cur.execute("SELECT user_id, name FROM prohere_users ORDER BY name")
+                prohere_rows = cur.fetchall()
         finally:
             conn.close()
     total   = Decimal(str(row["total_boy"])) if row["total_boy"] else Decimal("0")
     users   = row["users"] or 0
     grups   = row["grups"] or 0
     ort_boy = (total / users).to_integral_value() if users > 0 else Decimal("0")
+
+    # Prohere siyahısı
+    if prohere_rows:
+        prohere_lines = "\n".join(
+            f"  {i+1}. *{r['name'] or 'Bilinmeyen'}* — `{r['user_id']}`"
+            for i, r in enumerate(prohere_rows)
+        )
+        prohere_text = f"\n\n🛡️ *Yetkili listesi:* ({len(prohere_rows)} kişi)\n{prohere_lines}"
+    else:
+        prohere_text = "\n\n🛡️ *Yetkili listesi:* Henüz yok."
+
     await update.message.reply_text(
         f"📊 *BOT İSTATİSTİKLERİ*\n\n"
         f"👥 Toplam grup: *{grups}*\n"
         f"👤 Toplam kayıtlı kullanıcı: *{users}*\n"
         f"🍆 Toplam boy: *{fmt_boy(total)} cm*\n"
         f"📏 Ortalama boy: *{fmt_boy(ort_boy)} cm*\n"
-        f"🎟️ Promo kod sayısı: *{promo_count}*",
+        f"🎟️ Promo kod sayısı: *{promo_count}*"
+        f"{prohere_text}",
         parse_mode="Markdown"
     )
 
@@ -1410,9 +1467,10 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except InvalidOperation:
         await msg.reply_text("❗ Geçerli bir sayı gir.")
         return
+    # ── FIX: 100 basamaq limiti ──
     clean = val.lstrip("-").split(".")[0]
-    if len(clean) > 40:
-        await msg.reply_text("❗ En fazla 40 basamaklı sayı girebilirsin.")
+    if len(clean) > 100:
+        await msg.reply_text("❗ En fazla *100 basamaklı* sayı girebilirsin.", parse_mode="Markdown")
         return
     target_user = msg.reply_to_message.from_user
     cid         = str(update.effective_chat.id)
@@ -1438,7 +1496,6 @@ async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     msg = update.message
 
-    # Arqument yoxdursa — siyahı göstər
     if not msg.reply_to_message:
         async with _db_lock:
             conn = get_conn()
@@ -1458,7 +1515,6 @@ async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
-    # Reply varsa — yetki ver
     target_user = msg.reply_to_message.from_user
     tid         = str(target_user.id)
     name        = get_name(target_user)
@@ -1628,6 +1684,7 @@ def main():
     app.add_handler(CommandHandler("promo",           cmd_promo))
     app.add_handler(CommandHandler("ozelpromokod",    cmd_ozelpromokod))
     app.add_handler(CommandHandler("promokodolustur", cmd_promokodolustur))
+    app.add_handler(CommandHandler("promosil",        cmd_promosil))
     app.add_handler(CommandHandler("istatistik",      cmd_istatistik))
     app.add_handler(CommandHandler("disistatistik",   cmd_disistatistik))
     app.add_handler(CommandHandler("degistir",        cmd_degistir))
