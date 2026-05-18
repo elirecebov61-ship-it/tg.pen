@@ -89,6 +89,11 @@ def init_db():
                 chat_id TEXT PRIMARY KEY,
                 title   TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS banned_users (
+                user_id TEXT PRIMARY KEY,
+                reason  TEXT DEFAULT '',
+                banned_at TEXT DEFAULT ''
+            );
         """)
 
         # prohere_users cədvəlinə name sütunu əlavə et (köhnə versiyada yoxdursa)
@@ -164,6 +169,42 @@ def init_db():
     finally:
         conn.close()
 
+# ── Ban yoxlaması ──────────────────────────────────────────────────────────
+def is_banned(cur, user_id: str) -> tuple:
+    """Returns (True, reason) if banned, else (False, '')"""
+    cur.execute("SELECT reason FROM banned_users WHERE user_id=%s", (str(user_id),))
+    row = cur.fetchone()
+    if row:
+        reason = row["reason"] if isinstance(row, dict) else row[0]
+        return True, reason or "Sebep belirtilmedi."
+    return False, ""
+
+async def check_ban(update: Update) -> bool:
+    """Returns True if user is banned (and sends message). Use in handlers."""
+    if not update.effective_user:
+        return False
+    uid = str(update.effective_user.id)
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            banned, reason = is_banned(cur, uid)
+    finally:
+        conn.close()
+    if banned:
+        msg = (
+            f"🚫 *Bottan banlandın.*\n"
+            f"📌 *Sebep:* {reason}"
+        )
+        try:
+            if update.message:
+                await update.message.reply_text(msg, parse_mode="Markdown")
+            elif update.callback_query:
+                await update.callback_query.answer(f"🚫 Bottan banlandın. Sebep: {reason}", show_alert=True)
+        except Exception:
+            pass
+        return True
+    return False
+
 def is_prohere(cur, user_id: str) -> bool:
     cur.execute("SELECT 1 FROM prohere_users WHERE user_id=%s", (user_id,))
     return cur.fetchone() is not None
@@ -230,6 +271,9 @@ def ensure_group(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type == "private":
             await update.message.reply_text("🚫 Bu komut sadece gruplarda çalışır!")
+            return
+        # Ban check
+        if await check_ban(update):
             return
         return await func(update, ctx)
     return wrapper
@@ -304,12 +348,11 @@ def random_spin() -> list:
     return [random.choice(SLOT_SEMBOLLER) for _ in range(3)]
 
 # ── Boy callback_data üçün qısa format (Telegram 64 bayt limiti) ──
+# Böyük ədədlər üçün bot_data-dan istifadə edirik, callback_data-ya yalnız key ötürürük
 def bahis_to_cb(bahis: Decimal) -> str:
-    """Decimal-i callback_data üçün string-ə çevir."""
     return str(bahis)
 
 def cb_to_bahis(s: str) -> Decimal:
-    """callback_data string-ini Decimal-ə çevir."""
     return Decimal(s)
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -350,7 +393,6 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📦 `/promo <kod>` — Promosyon kodunu kullanır.\n"
         "🎫 `/promokodolustur <miktar> <gün>` — Rastgele promo kod üretir. _(Admin)_\n"
         "🎟️ `/ozelpromokod <KOD> <miktar> <gün>` — Özel promo kod üretir. _(Admin)_\n"
-        "🗑️ `/promosil <KOD>` — Promo kodu siler. _(Admin)_\n\n"
         "💡 KISA NOTLAR\n"
         "• Reply gereken komutlar: `/boyu`, `/vs`, `/thief`, `/yolla`, `/kaldir`, `/indir`\n"
         "• Günlük sayaçlar UTC+3 saatine göre sıfırlanır.\n\n"
@@ -458,6 +500,7 @@ async def cmd_siralama(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append("\nKimin borusu ne kadar öttü bakalım 😎🍆")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+# ── /yt ───────────────────────────────────────────────────────────────────
 @ensure_group
 async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid  = str(update.effective_chat.id)
@@ -488,17 +531,20 @@ async def cmd_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if bahis <= 0 or bahis > u["boy"]:
         await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
-    # Bahisi bot_data-da saxla, callback_data-ya yalnız key ver
+
+    # Bahisi bot_data-da saxla; callback_data-ya yalnız storage key ötür
     keyboard = [[
-        InlineKeyboardButton("🟡 YAZI", callback_data=f"yt|yazi|{uid}|{bahis_to_cb(bahis)}"),
-        InlineKeyboardButton("🦅 TURA", callback_data=f"yt|tura|{uid}|{bahis_to_cb(bahis)}")
+        InlineKeyboardButton("🟡 YAZI", callback_data=f"yt|yazi|{uid}"),
+        InlineKeyboardButton("🦅 TURA", callback_data=f"yt|tura|{uid}")
     ]]
     sent = await update.message.reply_text(
         f"🪙 *YAZI TURA BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n⏳ 20 saniye içinde seç!",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
     key = f"{cid}_{sent.message_id}"
-    ctx.bot_data.setdefault("pending_bets", {})[key] = {"uid": uid, "cid": cid, "bahis": str(bahis), "name": name, "done": False}
+    ctx.bot_data.setdefault("pending_bets", {})[key] = {
+        "uid": uid, "cid": cid, "bahis": str(bahis), "name": name, "done": False
+    }
     ctx.job_queue.run_once(bet_timeout, 20, data={"cid": cid, "mid": sent.message_id, "name": name}, chat_id=int(cid), name=f"bet_{key}")
 
 async def bet_timeout(ctx: ContextTypes.DEFAULT_TYPE):
@@ -519,6 +565,9 @@ async def bet_timeout(ctx: ContextTypes.DEFAULT_TYPE):
 
 async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query      = update.callback_query
+    # Ban check for callbacks
+    if await check_ban(update):
+        return
     parts      = query.data.split("|")
     secim_raw  = parts[1]
     bet_uid    = parts[2]
@@ -534,7 +583,6 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if key not in bets or bets[key].get("done"):
             await query.answer("⚠️ Bu bahis süresi doldu veya zaten oynandı.", show_alert=True)
             return
-        # Bahisi bot_data-dan al — böyük ədədlər callback_data-ya sığmaya bilər
         bahis = Decimal(bets[key]["bahis"])
         bets[key]["done"] = True
     for job in ctx.job_queue.get_jobs_by_name(f"bet_{key}"):
@@ -570,6 +618,7 @@ async def yt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.close()
     await query.edit_message_text(msg, parse_mode="Markdown")
 
+# ── /vs ───────────────────────────────────────────────────────────────────
 @ensure_group
 async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -621,8 +670,8 @@ async def cmd_vs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     challenger_name = get_name(update.effective_user)
     target_name     = get_name(target_user)
     keyboard = [[
-        InlineKeyboardButton("🍌 KABUL", callback_data=f"vs|kabul|{uid}|{tid}|{bahis_to_cb(bahis)}"),
-        InlineKeyboardButton("🙅 KAÇ",   callback_data=f"vs|kac|{uid}|{tid}|{bahis_to_cb(bahis)}")
+        InlineKeyboardButton("🍌 KABUL", callback_data=f"vs|kabul|{uid}|{tid}"),
+        InlineKeyboardButton("🙅 KAÇ",   callback_data=f"vs|kac|{uid}|{tid}")
     ]]
     sent = await msg.reply_text(
         f"⚔️ *VS BAŞLADI!*\n\n🗡️ Meydan okuyan: *{challenger_name}*\n🛡️ Rakip: *{target_name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n\n⏳ 20 saniye içinde cevap ver!",
@@ -653,6 +702,8 @@ async def vs_timeout(ctx: ContextTypes.DEFAULT_TYPE):
 
 async def vs_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query          = update.callback_query
+    if await check_ban(update):
+        return
     parts          = query.data.split("|")
     action         = parts[1]
     challenger_uid = parts[2]
@@ -787,6 +838,7 @@ async def cmd_condom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ── /bk ───────────────────────────────────────────────────────────────────
 @ensure_group
 async def cmd_bk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid  = str(update.effective_chat.id)
@@ -818,9 +870,9 @@ async def cmd_bk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❗ Yetersiz/geçersiz bahis. Boyun: *{fmt_boy(u['boy'])} cm*", parse_mode="Markdown")
         return
     keyboard = [[
-        InlineKeyboardButton("1🥤", callback_data=f"bk|1|{uid}|{bahis_to_cb(bahis)}"),
-        InlineKeyboardButton("2🥤", callback_data=f"bk|2|{uid}|{bahis_to_cb(bahis)}"),
-        InlineKeyboardButton("3🥤", callback_data=f"bk|3|{uid}|{bahis_to_cb(bahis)}"),
+        InlineKeyboardButton("1🥤", callback_data=f"bk|1|{uid}"),
+        InlineKeyboardButton("2🥤", callback_data=f"bk|2|{uid}"),
+        InlineKeyboardButton("3🥤", callback_data=f"bk|3|{uid}"),
     ]]
     sent = await update.message.reply_text(
         f"🃏 *BUL KARAYI BAŞLADI!*\n👤 *{name}*\n🍆 Bahis: *{fmt_boy(bahis)} cm*\n⏳ 20 saniye içinde seç!",
@@ -848,6 +900,8 @@ async def bk_timeout(ctx: ContextTypes.DEFAULT_TYPE):
 
 async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query      = update.callback_query
+    if await check_ban(update):
+        return
     parts      = query.data.split("|")
     secim      = int(parts[1])
     bet_uid    = parts[2]
@@ -901,6 +955,7 @@ async def bk_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.close()
     await query.edit_message_text(msg, parse_mode="Markdown")
 
+# ── /slot ─────────────────────────────────────────────────────────────────
 @ensure_group
 async def cmd_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid  = str(update.effective_chat.id)
@@ -1292,7 +1347,7 @@ async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         miktar = Decimal(ctx.args[1])
         gun    = int(ctx.args[2])
     except (InvalidOperation, ValueError):
-        await update.message.reply_text("❗ Miktar ve gün düzgün değer olmalı!")
+        await update.message.reply_text("❗ Miktar ve gün düzgün dəyər olmalı!")
         return
     expires = (now_tr() + timedelta(days=gun)).isoformat()
     async with _db_lock:
@@ -1322,7 +1377,7 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         miktar = Decimal(ctx.args[0])
         gun    = int(ctx.args[1])
     except (InvalidOperation, ValueError):
-        await update.message.reply_text("❗ Miktar ve gün düzgün değer olmalı!")
+        await update.message.reply_text("❗ Miktar ve gün düzgün dəyər olmalı!")
         return
     kod     = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
     expires = (now_tr() + timedelta(days=gun)).isoformat()
@@ -1342,7 +1397,6 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ── YENİ: /promosil ─────────────────────────────────────────────────────────
 async def cmd_promosil(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
@@ -1370,6 +1424,7 @@ async def cmd_promosil(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ *`{kod}`* kodu bulunamadı!", parse_mode="Markdown")
 
+# ── /istatistik — prohere adlarını düzgün göstər ──────────────────────────
 async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
@@ -1382,8 +1437,7 @@ async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 row = cur.fetchone()
                 cur.execute("SELECT COUNT(*) as c FROM promos")
                 promo_count = cur.fetchone()["c"]
-                # ── Prohere siyahısı ──
-                cur.execute("SELECT user_id, name FROM prohere_users ORDER BY name")
+                cur.execute("SELECT p.user_id, COALESCE(NULLIF(p.name,''), u_agg.name, 'Bilinmeyen') as name FROM prohere_users p LEFT JOIN (SELECT user_id, MAX(name) as name FROM users GROUP BY user_id) u_agg ON u_agg.user_id = p.user_id ORDER BY name")
                 prohere_rows = cur.fetchall()
         finally:
             conn.close()
@@ -1392,10 +1446,9 @@ async def cmd_istatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     grups   = row["grups"] or 0
     ort_boy = (total / users).to_integral_value() if users > 0 else Decimal("0")
 
-    # Prohere siyahısı
     if prohere_rows:
         prohere_lines = "\n".join(
-            f"  {i+1}. *{r['name'] or 'Bilinmeyen'}* — `{r['user_id']}`"
+            f"  {i+1}. *{r['name']}* — `{r['user_id']}`"
             for i, r in enumerate(prohere_rows)
         )
         prohere_text = f"\n\n🛡️ *Yetkili listesi:* ({len(prohere_rows)} kişi)\n{prohere_lines}"
@@ -1467,7 +1520,6 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except InvalidOperation:
         await msg.reply_text("❗ Geçerli bir sayı gir.")
         return
-    # ── FIX: 100 basamaq limiti ──
     clean = val.lstrip("-").split(".")[0]
     if len(clean) > 100:
         await msg.reply_text("❗ En fazla *100 basamaklı* sayı girebilirsin.", parse_mode="Markdown")
@@ -1501,7 +1553,14 @@ async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn = get_conn()
             try:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT user_id, name FROM prohere_users ORDER BY name")
+                    cur.execute("""
+                        SELECT p.user_id,
+                               COALESCE(NULLIF(p.name,''), u_agg.name, 'Bilinmeyen') as name
+                        FROM prohere_users p
+                        LEFT JOIN (SELECT user_id, MAX(name) as name FROM users GROUP BY user_id) u_agg
+                            ON u_agg.user_id = p.user_id
+                        ORDER BY name
+                    """)
                     rows = cur.fetchall()
             finally:
                 conn.close()
@@ -1510,8 +1569,7 @@ async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         lines = [f"🛡️ *Yetkili listesi:* ({len(rows)} kişi)\n"]
         for i, row in enumerate(rows, 1):
-            ad = row["name"] or "Bilinmeyen"
-            lines.append(f"{i}. *{ad}* — `{row['user_id']}`")
+            lines.append(f"{i}. *{row['name']}* — `{row['user_id']}`")
         await msg.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
@@ -1616,6 +1674,199 @@ async def cmd_duyuru(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ── /ban ──────────────────────────────────────────────────────────────────
+async def cmd_ban(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
+        return
+    if not ctx.args:
+        await update.message.reply_text(
+            "❗ Kullanım: `/ban <user_id veya @kullanıcıadı> <sebep>`\n"
+            "Örnek: `/ban 123456789 Kural ihlali`",
+            parse_mode="Markdown"
+        )
+        return
+
+    target_arg = ctx.args[0]
+    reason     = " ".join(ctx.args[1:]) if len(ctx.args) > 1 else "Sebep belirtilmedi."
+
+    # ID mi yoksa @username mi?
+    if target_arg.startswith("@"):
+        # username-dən ID almaq lazımdır — DB-dən yoxlayırıq
+        username_clean = target_arg.lstrip("@").lower()
+        async with _db_lock:
+            conn = get_conn()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    # users cədvəlində name ilə axtarış (tam deyil, amma əlimizdəki yeganə yol)
+                    cur.execute("SELECT DISTINCT user_id, name FROM users WHERE LOWER(name) LIKE %s LIMIT 5", (f"%{username_clean}%",))
+                    found = cur.fetchall()
+            finally:
+                conn.close()
+        if not found:
+            await update.message.reply_text(
+                f"❌ `{target_arg}` adlı kullanıcı DB'de bulunamadı.\n"
+                f"Direkt user\\_id ile dene: `/ban 123456789 sebep`",
+                parse_mode="Markdown"
+            )
+            return
+        if len(found) > 1:
+            lines = [f"⚠️ Birden fazla eşleşme bulundu, direkt ID kullan:\n"]
+            for r in found:
+                lines.append(f"• *{r['name']}* — `{r['user_id']}`")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+        target_id   = found[0]["user_id"]
+        target_name = found[0]["name"] or target_arg
+    else:
+        # Rəqəm ID
+        if not target_arg.lstrip("-").isdigit():
+            await update.message.reply_text("❗ Geçerli bir user_id veya @kullanıcıadı gir.", parse_mode="Markdown")
+            return
+        target_id = target_arg
+        # Adı DB-dən al
+        async with _db_lock:
+            conn = get_conn()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT name FROM users WHERE user_id=%s LIMIT 1", (target_id,))
+                    row = cur.fetchone()
+            finally:
+                conn.close()
+        target_name = row["name"] if row and row["name"] else target_id
+
+    # Ban et
+    banned_at = now_tr().isoformat()
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO banned_users (user_id, reason, banned_at) VALUES (%s,%s,%s) "
+                    "ON CONFLICT(user_id) DO UPDATE SET reason=EXCLUDED.reason, banned_at=EXCLUDED.banned_at",
+                    (target_id, reason, banned_at)
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    await update.message.reply_text(
+        f"🔨 *BAN UYGULANDII!*\n\n"
+        f"👤 Kullanıcı: *{target_name}*\n"
+        f"🆔 ID: `{target_id}`\n"
+        f"📌 Sebep: _{reason}_\n\n"
+        f"Bu kullanıcı artık botun hiçbir komutunu kullanamaz.",
+        parse_mode="Markdown"
+    )
+
+# ── /unban ────────────────────────────────────────────────────────────────
+async def cmd_unban(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
+        return
+    if not ctx.args:
+        await update.message.reply_text(
+            "❗ Kullanım: `/unban <user_id veya @kullanıcıadı>`",
+            parse_mode="Markdown"
+        )
+        return
+
+    target_arg = ctx.args[0]
+
+    if target_arg.startswith("@"):
+        username_clean = target_arg.lstrip("@").lower()
+        async with _db_lock:
+            conn = get_conn()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT DISTINCT user_id, name FROM users WHERE LOWER(name) LIKE %s LIMIT 5", (f"%{username_clean}%",))
+                    found = cur.fetchall()
+            finally:
+                conn.close()
+        if not found:
+            await update.message.reply_text(
+                f"❌ `{target_arg}` adlı kullanıcı DB'de bulunamadı.",
+                parse_mode="Markdown"
+            )
+            return
+        if len(found) > 1:
+            lines = [f"⚠️ Birden fazla eşleşme, direkt ID kullan:\n"]
+            for r in found:
+                lines.append(f"• *{r['name']}* — `{r['user_id']}`")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+        target_id   = found[0]["user_id"]
+        target_name = found[0]["name"] or target_arg
+    else:
+        if not target_arg.lstrip("-").isdigit():
+            await update.message.reply_text("❗ Geçerli bir user_id veya @kullanıcıadı gir.", parse_mode="Markdown")
+            return
+        target_id = target_arg
+        async with _db_lock:
+            conn = get_conn()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT name FROM users WHERE user_id=%s LIMIT 1", (target_id,))
+                    row = cur.fetchone()
+            finally:
+                conn.close()
+        target_name = row["name"] if row and row["name"] else target_id
+
+    # Ban-ı qaldır
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM banned_users WHERE user_id=%s", (target_id,))
+                deleted = cur.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+
+    if not deleted:
+        await update.message.reply_text(
+            f"⚠️ `{target_id}` ID'li kullanıcı zaten banlı değil.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Botun olduğu bütün gruplarda etiketle
+    async with _db_lock:
+        conn = get_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT DISTINCT chat_id FROM users WHERE user_id=%s", (target_id,))
+                user_chats = cur.fetchall()
+        finally:
+            conn.close()
+
+    # Unban mesajını bütün grublara göndər
+    mention = f"[{target_name}](tg://user?id={target_id})"
+    unban_msg = (
+        f"✅ *BAN KALDIRILDI!*\n\n"
+        f"👤 Kullanıcı: {mention}\n"
+        f"🆔 ID: `{target_id}`\n\n"
+        f"Bu kullanıcı artık botu tekrar kullanabilir."
+    )
+    sent_count = 0
+    for chat_row in user_chats:
+        try:
+            await ctx.bot.send_message(
+                chat_id=int(chat_row["chat_id"]),
+                text=unban_msg,
+                parse_mode="Markdown"
+            )
+            sent_count += 1
+        except Exception:
+            pass
+
+    # Admin'e özet
+    await update.message.reply_text(
+        f"✅ *{target_name}* (`{target_id}`) banı kaldırıldı.\n"
+        f"📢 *{sent_count}* gruba bildirim gönderildi.",
+        parse_mode="Markdown"
+    )
+
 async def cache_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or update.effective_chat.type == "private":
         return
@@ -1692,6 +1943,8 @@ def main():
     app.add_handler(CommandHandler("unprohere",       cmd_unprohere))
     app.add_handler(CommandHandler("gruplar",         cmd_gruplar))
     app.add_handler(CommandHandler("duyuru",          cmd_duyuru))
+    app.add_handler(CommandHandler("ban",             cmd_ban))
+    app.add_handler(CommandHandler("unban",           cmd_unban))
     app.add_handler(CallbackQueryHandler(yt_callback, pattern=r"^yt\|"))
     app.add_handler(CallbackQueryHandler(vs_callback, pattern=r"^vs\|"))
     app.add_handler(CallbackQueryHandler(bk_callback, pattern=r"^bk\|"))
