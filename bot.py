@@ -44,7 +44,6 @@ def init_db():
     try:
         cur = conn.cursor()
 
-        # Ana cədvəllər
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 chat_id               TEXT NOT NULL,
@@ -83,7 +82,8 @@ def init_db():
                 expires TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS prohere_users (
-                user_id TEXT PRIMARY KEY
+                user_id TEXT PRIMARY KEY,
+                name    TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS chats (
                 chat_id TEXT PRIMARY KEY,
@@ -91,11 +91,22 @@ def init_db():
             );
         """)
 
-        # Migration: mövcud INTEGER sütunları NUMERIC-ə çevir
+        # prohere_users cədvəlinə name sütunu əlavə et (köhnə versiyada yoxdursa)
         cur.execute("""
             DO $$
             BEGIN
-                -- users.boy INTEGER → NUMERIC
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='prohere_users' AND column_name='name'
+                ) THEN
+                    ALTER TABLE prohere_users ADD COLUMN name TEXT DEFAULT '';
+                END IF;
+            END $$;
+        """)
+
+        cur.execute("""
+            DO $$
+            BEGIN
                 IF EXISTS (
                     SELECT 1 FROM information_schema.columns
                     WHERE table_name='users' AND column_name='boy'
@@ -104,7 +115,6 @@ def init_db():
                     ALTER TABLE users ALTER COLUMN boy TYPE NUMERIC USING boy::NUMERIC;
                 END IF;
 
-                -- promos.miktar INTEGER → NUMERIC
                 IF EXISTS (
                     SELECT 1 FROM information_schema.columns
                     WHERE table_name='promos' AND column_name='miktar'
@@ -115,7 +125,6 @@ def init_db():
             END $$;
         """)
 
-        # promo_used migration: köhnə (kod, user_id) → yeni (kod, user_id, chat_id)
         cur.execute("""
             DO $$
             BEGIN
@@ -155,6 +164,10 @@ def init_db():
     finally:
         conn.close()
 
+def is_prohere(cur, user_id: str) -> bool:
+    cur.execute("SELECT 1 FROM prohere_users WHERE user_id=%s", (user_id,))
+    return cur.fetchone() is not None
+
 def get_user_row(cur, chat_id, user_id):
     cid, uid = str(chat_id), str(user_id)
     cur.execute("SELECT * FROM users WHERE chat_id=%s AND user_id=%s", (cid, uid))
@@ -164,7 +177,6 @@ def get_user_row(cur, chat_id, user_id):
         cur.execute("SELECT * FROM users WHERE chat_id=%s AND user_id=%s", (cid, uid))
         row = cur.fetchone()
     d = dict(row)
-    # boy həmişə Decimal olsun
     if d.get("boy") is not None:
         d["boy"] = Decimal(str(d["boy"]))
     else:
@@ -209,9 +221,7 @@ def is_registered(u: dict) -> bool:
     return bool(u.get("registered"))
 
 def fmt_boy(val) -> str:
-    """Böyük rəqəmləri gözəl formatla"""
     d = Decimal(str(val))
-    # Onluq hissə yoxdursa tam göstər
     if d == d.to_integral_value():
         return str(int(d))
     return str(d)
@@ -219,7 +229,7 @@ def fmt_boy(val) -> str:
 def ensure_group(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type == "private":
-            await update.message.reply_text("🚫 Bu komet sadece gruplarda çalışır!")
+            await update.message.reply_text("🚫 Bu komut sadece gruplarda çalışır!")
             return
         return await func(update, ctx)
     return wrapper
@@ -1246,9 +1256,20 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
-        return
+    uid_caller = str(update.effective_user.id)
+    is_admin   = (update.effective_user.id == ADMIN_ID)
+    # Admin deyilsə prohere yoxla
+    if not is_admin:
+        async with _db_lock:
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    allowed = is_prohere(cur, uid_caller)
+            finally:
+                conn.close()
+        if not allowed:
+            await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
+            return
     if len(ctx.args) < 3:
         await update.message.reply_text("❗ Kullanım: `/ozelpromokod <KOD> <miktar> <gün>`", parse_mode="Markdown")
         return
@@ -1361,16 +1382,18 @@ async def cmd_disistatistik(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     uid_caller = str(update.effective_user.id)
     is_admin   = (update.effective_user.id == ADMIN_ID)
     if not is_admin:
-        conn = get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM prohere_users WHERE user_id=%s", (uid_caller,))
-                allowed = cur.fetchone() is not None
-        finally:
-            conn.close()
+        async with _db_lock:
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    allowed = is_prohere(cur, uid_caller)
+            finally:
+                conn.close()
         if not allowed:
             await update.message.reply_text("🚫 Bu komutu kullanmaya erişimin yok.")
             return
@@ -1387,7 +1410,6 @@ async def cmd_degistir(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except InvalidOperation:
         await msg.reply_text("❗ Geçerli bir sayı gir.")
         return
-    # 40 rəqəmli yoxlama
     clean = val.lstrip("-").split(".")[0]
     if len(clean) > 40:
         await msg.reply_text("❗ En fazla 40 basamaklı sayı girebilirsin.")
@@ -1415,9 +1437,28 @@ async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Bu komuta erişim izniniz yok.")
         return
     msg = update.message
+
+    # Arqument yoxdursa — siyahı göstər
     if not msg.reply_to_message:
-        await msg.reply_text("❗ Kullanım: Birine yanıt verip `/prohere` yaz.", parse_mode="Markdown")
+        async with _db_lock:
+            conn = get_conn()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT user_id, name FROM prohere_users ORDER BY name")
+                    rows = cur.fetchall()
+            finally:
+                conn.close()
+        if not rows:
+            await msg.reply_text("📭 Heç bir yetkili yok.")
+            return
+        lines = [f"🛡️ *Yetkili listesi:* ({len(rows)} kişi)\n"]
+        for i, row in enumerate(rows, 1):
+            ad = row["name"] or "Bilinmeyen"
+            lines.append(f"{i}. *{ad}* — `{row['user_id']}`")
+        await msg.reply_text("\n".join(lines), parse_mode="Markdown")
         return
+
+    # Reply varsa — yetki ver
     target_user = msg.reply_to_message.from_user
     tid         = str(target_user.id)
     name        = get_name(target_user)
@@ -1425,11 +1466,17 @@ async def cmd_prohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn = get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO prohere_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (tid,))
+                cur.execute(
+                    "INSERT INTO prohere_users (user_id, name) VALUES (%s,%s) ON CONFLICT(user_id) DO UPDATE SET name=EXCLUDED.name",
+                    (tid, name)
+                )
             conn.commit()
         finally:
             conn.close()
-    await msg.reply_text(f"✅ *{name}* artık yetkili!\n🛡️ Artık `/degistir` komutunu kullanabilir.", parse_mode="Markdown")
+    await msg.reply_text(
+        f"✅ *{name}* artık yetkili!\n🛡️ Artık `/degistir` ve `/ozelpromokod` komutlarını kullanabilir.",
+        parse_mode="Markdown"
+    )
 
 async def cmd_unprohere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
