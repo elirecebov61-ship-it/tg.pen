@@ -1243,7 +1243,7 @@ async def cmd_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             conn.rollback()
             logger.error(f"Promo xətası: {e}")
-            await update.message.reply_text("❌ Bir xəta baş verdi, yenidən cəhd et.")
+            await update.message.reply_text("❌ Bir hata oldu, yeniden kullan.")
             return
         finally:
             conn.close()
@@ -1278,7 +1278,7 @@ async def cmd_ozelpromokod(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         miktar = Decimal(ctx.args[1])
         gun    = int(ctx.args[2])
     except (InvalidOperation, ValueError):
-        await update.message.reply_text("❗ Miktar ve gün düzgün dəyər olmalı!")
+        await update.message.reply_text("❗ Miktar ve gün düzgün değer olmalı!")
         return
     expires = (now_tr() + timedelta(days=gun)).isoformat()
     async with _db_lock:
@@ -1308,7 +1308,7 @@ async def cmd_promokodolustur(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         miktar = Decimal(ctx.args[0])
         gun    = int(ctx.args[1])
     except (InvalidOperation, ValueError):
-        await update.message.reply_text("❗ Miktar ve gün düzgün dəyər olmalı!")
+        await update.message.reply_text("❗ Miktar ve gün düzgün değer olmalı!")
         return
     kod     = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
     expires = (now_tr() + timedelta(days=gun)).isoformat()
