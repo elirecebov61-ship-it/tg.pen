@@ -467,7 +467,7 @@ async def cmd_uzat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 u["name"]       = name
                 if u["uzat_reset"] is None:
                     u["uzat_reset"] = (now + timedelta(hours=12)).isoformat()
-                suffix = "💤 *Hala 1 hakkın daha var!*" if u["uzat_hak"] == 1 else "💤 *Bu periyotluk bitti.*"
+                suffix = "💡 *Hala 1 hakkın daha var!*" if u["uzat_hak"] == 1 else "💤 *Bu periyotluk bitti.*"
                 boy = u["boy"]
                 save_user(cur, u)
             conn.commit()
