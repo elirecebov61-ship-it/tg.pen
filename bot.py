@@ -405,7 +405,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
-        "╔══════ 🍆 PENİSEREN BOT 🍆 ══════╗\n"
+        "╔══════ 🍆 C31KPENIS BOT 🍆 ══════╗\n"
         "           🔥 KOMUT REHBERİ 🔥\n"
         "╚══════════════════════════════╝\n\n"
         "🏛️ GENEL KOMUTLAR\n"
